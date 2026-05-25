@@ -1,121 +1,319 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 
 // ─────────────────────────────────────────────
-//  FIREBASE CONFIG  ← change these URLs to yours
+//  FIREBASE CONFIG  (no google-services.json!)
 // ─────────────────────────────────────────────
-class FirebaseConfig {
-  // Dashboard tab  – reads/writes "jadwal" node
-  static String dashboardUrl =
-      'https://okamakan-01-default-rtdb.asia-southeast1.firebasedatabase.app';
+const String _firebaseUrl =
+    'https://monika-011-default-rtdb.asia-southeast1.firebasedatabase.app';
+const String _firebaseKey = 'AIzaSyDmbTZqKCF4wvm7H8T9x140zepPfywvYVc';
 
-  // Volume tab  – reads "jarakMakanan" node
-  static String volumeUrl =
-      'https://okamakan-01-default-rtdb.asia-southeast1.firebasedatabase.app';
+// ─────────────────────────────────────────────
+//  PASTEL COLOR PALETTE
+// ─────────────────────────────────────────────
+class AppColors {
+  static const bg = Color(0xFFF0F4FF);
+  static const card = Color(0xFFFFFFFF);
+  static const navBg = Color(0xFFFFFFFF);
 
-  // History tab  – reads "history" + "jarakMakanan" nodes
-  static String historyUrl =
-      'https://okamakan-01-default-rtdb.asia-southeast1.firebasedatabase.app';
+  static const good = Color(0xFF6EC4A7);
+  static const goodBg = Color(0xFFE8F8F3);
+  static const warn = Color(0xFFFFB347);
+  static const warnBg = Color(0xFFFFF5E4);
+  static const bad = Color(0xFFFF7B7B);
+  static const badBg = Color(0xFFFFEEEE);
+  static const neutral = Color(0xFFB0B8D0);
+  static const neutralBg = Color(0xFFF0F4FF);
+
+  static const primary = Color(0xFF7B9CFF);
+  static const primaryLight = Color(0xFFEEF2FF);
+  static const accent = Color(0xFFA78BFA);
+
+  static const textDark = Color(0xFF2D3561);
+  static const textMed = Color(0xFF6B7BA4);
+  static const textLight = Color(0xFFB0B8D0);
+
+  static const phColor = Color(0xFF7BC8FF);
+  static const phBg = Color(0xFFE8F6FF);
+  static const nh3Color = Color(0xFF98D8A8);
+  static const nh3Bg = Color(0xFFEAF8EE);
+  static const ntuColor = Color(0xFFFFD580);
+  static const ntuBg = Color(0xFFFFF9E6);
+  static const tdsColor = Color(0xFFD4A5F5);
+  static const tdsBg = Color(0xFFF5EEFF);
 }
 
 // ─────────────────────────────────────────────
 //  DATA MODELS
 // ─────────────────────────────────────────────
-class Jadwal {
-  String key;
-  int jam;
-  int menit;
-  bool aktif;
+class SensorLive {
+  final double ph;
+  final double nh3;
+  final double ntu;
+  final double tds;
 
-  Jadwal({
-    required this.key,
-    required this.jam,
-    required this.menit,
-    this.aktif = true,
+  const SensorLive({
+    this.ph = 0,
+    this.nh3 = 0,
+    this.ntu = 0,
+    this.tds = 0,
   });
 
-  String get waktu =>
-      '${jam.toString().padLeft(2, '0')}:${menit.toString().padLeft(2, '0')}';
+  factory SensorLive.fromJson(Map<dynamic, dynamic> j) => SensorLive(
+        ph: _toDouble(j['ph']),
+        nh3: _toDouble(j['nh3_ppm']),
+        ntu: _toDouble(j['ntu']),
+        tds: _toDouble(j['tds_ppm']),
+      );
+
+  static double _toDouble(dynamic v) {
+    if (v == null) return 0.0;
+    if (v is double) return v;
+    if (v is int) return v.toDouble();
+    return double.tryParse(v.toString()) ?? 0.0;
+  }
 }
 
-class LogPakan {
-  final String judul;
-  final String tanggal;
-  final String level;
+class HistoryItem {
+  final double ph, nh3, ntu, tds;
+  final String timestamp, unsafeReason;
 
-  LogPakan({required this.judul, required this.tanggal, required this.level});
+  const HistoryItem({
+    required this.ph,
+    required this.nh3,
+    required this.ntu,
+    required this.tds,
+    required this.timestamp,
+    this.unsafeReason = '',
+  });
+
+  factory HistoryItem.fromJson(Map<dynamic, dynamic> j) => HistoryItem(
+        ph: SensorLive._toDouble(j['ph']),
+        nh3: SensorLive._toDouble(j['nh3_ppm']),
+        ntu: SensorLive._toDouble(j['ntu']),
+        tds: SensorLive._toDouble(j['tds_ppm']),
+        timestamp: j['timestamp']?.toString() ?? '',
+        unsafeReason: j['unsafe_reason']?.toString() ?? '',
+      );
 }
 
 // ─────────────────────────────────────────────
-//  FIREBASE REST HELPERS
+//  STATUS HELPERS
 // ─────────────────────────────────────────────
-Future<Map<String, dynamic>?> fbGet(String baseUrl, String path) async {
-  final url = Uri.parse('$baseUrl/$path.json');
-  final res = await http.get(url);
-  if (res.statusCode == 200 && res.body != 'null') {
-    return json.decode(res.body) as Map<String, dynamic>;
+enum WaterStatus { good, warn, bad, loading }
+
+extension WaterStatusX on WaterStatus {
+  Color get color {
+    switch (this) {
+      case WaterStatus.good:
+        return AppColors.good;
+      case WaterStatus.warn:
+        return AppColors.warn;
+      case WaterStatus.bad:
+        return AppColors.bad;
+      case WaterStatus.loading:
+        return AppColors.neutral;
+    }
   }
-  return null;
-}
 
-Future<dynamic> fbGetValue(String baseUrl, String path) async {
-  final url = Uri.parse('$baseUrl/$path.json');
-  final res = await http.get(url);
-  if (res.statusCode == 200 && res.body != 'null') {
-    return json.decode(res.body);
+  Color get bgColor {
+    switch (this) {
+      case WaterStatus.good:
+        return AppColors.goodBg;
+      case WaterStatus.warn:
+        return AppColors.warnBg;
+      case WaterStatus.bad:
+        return AppColors.badBg;
+      case WaterStatus.loading:
+        return AppColors.neutralBg;
+    }
   }
-  return null;
-}
 
-Future<void> fbPut(String baseUrl, String path, Map<String, dynamic> data) async {
-  final url = Uri.parse('$baseUrl/$path.json');
-  await http.put(url, body: json.encode(data));
-}
-
-Future<void> fbPatch(String baseUrl, String path, Map<String, dynamic> data) async {
-  final url = Uri.parse('$baseUrl/$path.json');
-  await http.patch(url, body: json.encode(data));
-}
-
-Future<void> fbDelete(String baseUrl, String path) async {
-  final url = Uri.parse('$baseUrl/$path.json');
-  await http.delete(url);
-}
-
-Future<String?> fbPost(String baseUrl, String path, Map<String, dynamic> data) async {
-  final url = Uri.parse('$baseUrl/$path.json');
-  final res = await http.post(url, body: json.encode(data));
-  if (res.statusCode == 200) {
-    final body = json.decode(res.body);
-    return body['name'] as String?;
+  String get label {
+    switch (this) {
+      case WaterStatus.good:
+        return 'Baik';
+      case WaterStatus.warn:
+        return 'Waspada';
+      case WaterStatus.bad:
+        return 'Buruk';
+      case WaterStatus.loading:
+        return '—';
+    }
   }
-  return null;
+
+  String get emoji {
+    switch (this) {
+      case WaterStatus.good:
+        return '✅';
+      case WaterStatus.warn:
+        return '⚠️';
+      case WaterStatus.bad:
+        return '🚨';
+      case WaterStatus.loading:
+        return '⏳';
+    }
+  }
+}
+
+WaterStatus phStatus(double v) {
+  if (v >= 6.8 && v <= 8.0) return WaterStatus.good;
+  if ((v >= 6.0 && v < 6.8) || (v > 8.0 && v <= 8.5)) return WaterStatus.warn;
+  return WaterStatus.bad;
+}
+
+WaterStatus nh3Status(double v) {
+  if (v >= 0 && v <= 0.02) return WaterStatus.good;
+  if (v > 0.02 && v <= 0.05) return WaterStatus.warn;
+  return WaterStatus.bad;
+}
+
+WaterStatus ntuStatus(double v) {
+  if (v < 25) return WaterStatus.good;
+  if (v <= 50) return WaterStatus.warn;
+  return WaterStatus.bad;
+}
+
+WaterStatus tdsStatus(double v) {
+  if (v >= 0 && v <= 300) return WaterStatus.good;
+  if (v > 300 && v <= 500) return WaterStatus.warn;
+  return WaterStatus.bad;
+}
+
+WaterStatus overallStatus(SensorLive s) {
+  final statuses = [phStatus(s.ph), nh3Status(s.nh3), ntuStatus(s.ntu), tdsStatus(s.tds)];
+  if (statuses.any((st) => st == WaterStatus.bad)) return WaterStatus.bad;
+  if (statuses.any((st) => st == WaterStatus.warn)) return WaterStatus.warn;
+  return WaterStatus.good;
+}
+
+// ─────────────────────────────────────────────
+//  FIREBASE REST API SERVICE
+// ─────────────────────────────────────────────
+class FirebaseService {
+  static Future<SensorLive?> fetchLive() async {
+    try {
+      final uri = Uri.parse('$_firebaseUrl/sensorData/live.json?auth=$_firebaseKey');
+      final res = await http.get(uri).timeout(const Duration(seconds: 8));
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body);
+        if (data != null && data is Map) return SensorLive.fromJson(data);
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  static Future<List<HistoryItem>> fetchHistory() async {
+    try {
+      final uri = Uri.parse(
+          '$_firebaseUrl/sensorData/history.json?auth=$_firebaseKey&orderBy="\$key"&limitToLast=50');
+      final res = await http.get(uri).timeout(const Duration(seconds: 10));
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body);
+        if (data != null && data is Map) {
+          final list = data.entries
+              .map((e) => HistoryItem.fromJson(e.value as Map))
+              .toList();
+          list.sort((a, b) => b.timestamp.compareTo(a.timestamp));
+          return list;
+        }
+      }
+    } catch (_) {}
+    return [];
+  }
+}
+
+// ─────────────────────────────────────────────
+//  RECOMMENDATION ENGINE
+// ─────────────────────────────────────────────
+List<Map<String, String>> buildRecommendations(SensorLive s) {
+  final recs = <Map<String, String>>[];
+
+  final ps = phStatus(s.ph);
+  if (ps != WaterStatus.good) {
+    recs.add({
+      'param': 'pH',
+      'value': s.ph.toStringAsFixed(2),
+      'status': ps.label,
+      'emoji': ps.emoji,
+      'action': ps == WaterStatus.bad
+          ? 'Segera lakukan pergantian air 30–50%. Jika terlalu asam, tambahkan kapur dolomit/oyster shell. Jika terlalu basa, gunakan daun ketapang.'
+          : 'Kadar pH mulai tidak stabil. Periksa penumpukan kotoran di dasar kolam dan kurangi intensitas pemberian pakan.',
+    });
+  }
+
+  final as = nh3Status(s.nh3);
+  if (as != WaterStatus.good) {
+    recs.add({
+      'param': 'Amonia (NH₃)',
+      'value': s.nh3.toStringAsFixed(4),
+      'status': as.label,
+      'emoji': as.emoji,
+      'action': as == WaterStatus.bad
+          ? 'Puasakan ikan koi sepenuhnya! Nyalakan aerator ke tingkat maksimal dan bersihkan ruang filtrasi biologis segera.'
+          : 'Bakteri pengurai tidak bekerja maksimal. Tambahkan bakteri starter (probiotik) pada filter dan kurangi pakan harian.',
+    });
+  }
+
+  final ns = ntuStatus(s.ntu);
+  if (ns != WaterStatus.good) {
+    recs.add({
+      'param': 'Kekeruhan (NTU)',
+      'value': s.ntu.toStringAsFixed(2),
+      'status': ns.label,
+      'emoji': ns.emoji,
+      'action': ns == WaterStatus.bad
+          ? 'Filter mekanik sudah penuh/buntu. Bersihkan japmat atau kapas filter. Kuras sedimen endapan di ruang pompa.'
+          : 'Partikel kotoran melayang meningkat. Lakukan backwash pada filter kolam sedikit demi sedikit.',
+    });
+  }
+
+  final ts = tdsStatus(s.tds);
+  if (ts != WaterStatus.good) {
+    recs.add({
+      'param': 'Kadar Logam (TDS)',
+      'value': s.tds.toStringAsFixed(2),
+      'status': ts.label,
+      'emoji': ts.emoji,
+      'action': ts == WaterStatus.bad
+          ? 'TDS sangat tinggi. Tambahkan air tawar bersih perlahan-lahan. Hindari obat-obatan kimia berlebih.'
+          : 'Kadar zat terlarut mulai pekat. Pastikan sumber air tidak mengandung klorin atau logam berat berlebih.',
+    });
+  }
+
+  return recs;
 }
 
 // ─────────────────────────────────────────────
 //  MAIN
 // ─────────────────────────────────────────────
 void main() {
-  runApp(const PakanIkanApp());
+  WidgetsFlutterBinding.ensureInitialized();
+  SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
+    statusBarColor: Colors.transparent,
+    statusBarIconBrightness: Brightness.dark,
+  ));
+  runApp(const MonikaApp());
 }
 
-class PakanIkanApp extends StatelessWidget {
-  const PakanIkanApp({super.key});
-
+class MonikaApp extends StatelessWidget {
+  const MonikaApp({super.key});
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Pakan Ikan',
+      title: 'Monika',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
+        useMaterial3: true,
         colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF0077B6),
+          seedColor: AppColors.primary,
           brightness: Brightness.light,
         ),
-        useMaterial3: true,
         fontFamily: 'SF Pro Display',
+        scaffoldBackgroundColor: AppColors.bg,
       ),
       home: const SplashScreen(),
     );
@@ -123,362 +321,98 @@ class PakanIkanApp extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────
-//  SPLASH / MAIN SCREEN
+//  SPLASH SCREEN
 // ─────────────────────────────────────────────
-class SplashScreen extends StatelessWidget {
+class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
+  @override
+  State<SplashScreen> createState() => _SplashScreenState();
+}
+
+class _SplashScreenState extends State<SplashScreen>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _ctrl;
+  late Animation<double> _fade;
+  late Animation<double> _scale;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(vsync: this, duration: const Duration(milliseconds: 1200));
+    _fade = CurvedAnimation(parent: _ctrl, curve: Curves.easeIn);
+    _scale = Tween<double>(begin: 0.85, end: 1.0)
+        .animate(CurvedAnimation(parent: _ctrl, curve: Curves.easeOutBack));
+    _ctrl.forward();
+    Future.delayed(const Duration(milliseconds: 2200), () {
+      if (mounted) {
+        Navigator.pushReplacement(
+          context,
+          PageRouteBuilder(
+            pageBuilder: (_, __, ___) => const MainShell(),
+            transitionsBuilder: (_, a, __, c) =>
+                FadeTransition(opacity: a, child: c),
+            transitionDuration: const Duration(milliseconds: 500),
+          ),
+        );
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
     return Scaffold(
-      body: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [Color(0xFF023E8A), Color(0xFF0077B6), Color(0xFF00B4D8)],
-          ),
-        ),
-        child: SafeArea(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Spacer(flex: 2),
-              // Logo circle
-              Container(
-                width: 120,
-                height: 120,
-                decoration: BoxDecoration(
-                  color: Colors.white.withOpacity(0.15),
-                  shape: BoxShape.circle,
-                  border: Border.all(color: Colors.white.withOpacity(0.4), width: 2),
-                ),
-                child: const Icon(Icons.set_meal_rounded, size: 64, color: Colors.white),
-              ),
-              const SizedBox(height: 32),
-              const Text(
-                'Pakan Ikan',
-                style: TextStyle(
-                  fontSize: 36,
-                  fontWeight: FontWeight.bold,
-                  color: Colors.white,
-                  letterSpacing: 1.2,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                'Automatic Fish Feeder',
-                style: TextStyle(
-                  fontSize: 16,
-                  color: Colors.white.withOpacity(0.75),
-                  letterSpacing: 0.5,
-                ),
-              ),
-              const Spacer(flex: 3),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 48),
-                child: SizedBox(
-                  width: double.infinity,
-                  height: 52,
-                  child: ElevatedButton(
-                    onPressed: () {
-                      Navigator.pushReplacement(
-                        context,
-                        MaterialPageRoute(builder: (_) => const HomeShell()),
-                      );
-                    },
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.white,
-                      foregroundColor: const Color(0xFF023E8A),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(16),
+      backgroundColor: AppColors.primaryLight,
+      body: Center(
+        child: FadeTransition(
+          opacity: _fade,
+          child: ScaleTransition(
+            scale: _scale,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 96,
+                  height: 96,
+                  decoration: BoxDecoration(
+                    color: AppColors.primary,
+                    borderRadius: BorderRadius.circular(28),
+                    boxShadow: [
+                      BoxShadow(
+                        color: AppColors.primary.withOpacity(0.35),
+                        blurRadius: 24,
+                        offset: const Offset(0, 8),
                       ),
-                      elevation: 0,
-                    ),
-                    child: const Text(
-                      'Mulai',
-                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
-                    ),
+                    ],
+                  ),
+                  child: const Icon(Icons.water, color: Colors.white, size: 52),
+                ),
+                const SizedBox(height: 20),
+                const Text(
+                  'Monika',
+                  style: TextStyle(
+                    fontSize: 36,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.textDark,
+                    letterSpacing: -0.5,
                   ),
                 ),
-              ),
-              const SizedBox(height: 48),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-// ─────────────────────────────────────────────
-//  HOME SHELL  (bottom nav with 3 tabs)
-// ─────────────────────────────────────────────
-class HomeShell extends StatefulWidget {
-  const HomeShell({super.key});
-
-  @override
-  State<HomeShell> createState() => _HomeShellState();
-}
-
-class _HomeShellState extends State<HomeShell> {
-  int _currentIndex = 0;
-
-  final List<Widget> _tabs = const [
-    DashboardTab(),
-    VolumeTab(),
-    HistoryTab(),
-  ];
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      body: IndexedStack(index: _currentIndex, children: _tabs),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: _currentIndex,
-        onDestinationSelected: (i) => setState(() => _currentIndex = i),
-        destinations: const [
-          NavigationDestination(
-            icon: Icon(Icons.schedule_outlined),
-            selectedIcon: Icon(Icons.schedule_rounded),
-            label: 'Jadwal',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.water_drop_outlined),
-            selectedIcon: Icon(Icons.water_drop_rounded),
-            label: 'Volume',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.history_outlined),
-            selectedIcon: Icon(Icons.history_rounded),
-            label: 'History',
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// ─────────────────────────────────────────────
-//  DASHBOARD TAB  (jadwal / schedule list)
-// ─────────────────────────────────────────────
-class DashboardTab extends StatefulWidget {
-  const DashboardTab({super.key});
-
-  @override
-  State<DashboardTab> createState() => _DashboardTabState();
-}
-
-class _DashboardTabState extends State<DashboardTab> {
-  final List<Jadwal> _jadwalList = [];
-  bool _loading = true;
-
-  @override
-  void initState() {
-    super.initState();
-    _loadJadwal();
-  }
-
-  Future<void> _loadJadwal() async {
-    setState(() => _loading = true);
-    try {
-      final data = await fbGet(FirebaseConfig.dashboardUrl, 'jadwal');
-      final list = <Jadwal>[];
-      if (data != null) {
-        data.forEach((key, val) {
-          list.add(Jadwal(
-            key: key,
-            jam: (val['jam'] as num?)?.toInt() ?? 0,
-            menit: (val['menit'] as num?)?.toInt() ?? 0,
-            aktif: val['aktif'] as bool? ?? true,
-          ));
-        });
-        list.sort((a, b) {
-          final aNum = int.tryParse(a.key.replaceFirst('j', '')) ?? 0;
-          final bNum = int.tryParse(b.key.replaceFirst('j', '')) ?? 0;
-          return aNum.compareTo(bNum);
-        });
-      }
-      setState(() {
-        _jadwalList
-          ..clear()
-          ..addAll(list);
-        _loading = false;
-      });
-    } catch (e) {
-      setState(() => _loading = false);
-      _showSnack('Gagal memuat jadwal');
-    }
-  }
-
-  Future<void> _tambahJadwal() async {
-    var maxNum = 0;
-    for (final j in _jadwalList) {
-      final n = int.tryParse(j.key.replaceFirst('j', '')) ?? 0;
-      if (n > maxNum) maxNum = n;
-    }
-    final newKey = 'j${maxNum + 1}';
-    try {
-      await fbPut(FirebaseConfig.dashboardUrl, 'jadwal/$newKey', {
-        'jam': 0,
-        'menit': 0,
-        'aktif': true,
-      });
-      setState(() {
-        _jadwalList.add(Jadwal(key: newKey, jam: 0, menit: 0));
-      });
-      _showSnack('Jadwal $newKey ditambahkan');
-    } catch (_) {
-      _showSnack('Gagal menambah jadwal');
-    }
-  }
-
-  Future<void> _hapusJadwal(int index) async {
-    final jadwal = _jadwalList[index];
-    try {
-      await fbDelete(FirebaseConfig.dashboardUrl, 'jadwal/${jadwal.key}');
-      setState(() => _jadwalList.removeAt(index));
-      _showSnack('Jadwal ${jadwal.key} dihapus');
-    } catch (_) {
-      _showSnack('Gagal menghapus jadwal');
-    }
-  }
-
-  Future<void> _editJadwal(Jadwal jadwal) async {
-    final result = await showDialog<TimeOfDay>(
-      context: context,
-      builder: (_) => _TimePickerDialog(
-        initial: TimeOfDay(hour: jadwal.jam, minute: jadwal.menit),
-      ),
-    );
-    if (result == null) return;
-    try {
-      await fbPatch(FirebaseConfig.dashboardUrl, 'jadwal/${jadwal.key}', {
-        'jam': result.hour,
-        'menit': result.minute,
-      });
-      setState(() {
-        jadwal.jam = result.hour;
-        jadwal.menit = result.minute;
-      });
-      _showSnack('Jadwal ${jadwal.key} diupdate');
-    } catch (_) {
-      _showSnack('Gagal update jadwal');
-    }
-  }
-
-  void _showSnack(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Jadwal Pakan', style: TextStyle(fontWeight: FontWeight.bold)),
-        backgroundColor: const Color(0xFF0077B6),
-        foregroundColor: Colors.white,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh_rounded),
-            onPressed: _loadJadwal,
-            tooltip: 'Refresh',
-          ),
-        ],
-      ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : _jadwalList.isEmpty
-              ? _emptyState()
-              : ListView.builder(
-                  padding: const EdgeInsets.all(16),
-                  itemCount: _jadwalList.length,
-                  itemBuilder: (ctx, i) {
-                    final j = _jadwalList[i];
-                    return _JadwalCard(
-                      jadwal: j,
-                      onEdit: () => _editJadwal(j),
-                      onDelete: () => _hapusJadwal(i),
-                    );
-                  },
+                const SizedBox(height: 6),
+                const Text(
+                  'Monitor Kualitas Air Kolam Koi',
+                  style: TextStyle(
+                    fontSize: 15,
+                    color: AppColors.textMed,
+                    fontWeight: FontWeight.w400,
+                  ),
                 ),
-      floatingActionButton: FloatingActionButton.extended(
-        onPressed: _tambahJadwal,
-        icon: const Icon(Icons.add_alarm_rounded),
-        label: const Text('Tambah Jadwal'),
-        backgroundColor: const Color(0xFF0077B6),
-        foregroundColor: Colors.white,
-      ),
-    );
-  }
-
-  Widget _emptyState() {
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(Icons.schedule_rounded, size: 72, color: Colors.grey.shade400),
-          const SizedBox(height: 16),
-          Text('Belum ada jadwal', style: TextStyle(color: Colors.grey.shade500, fontSize: 16)),
-          const SizedBox(height: 8),
-          Text('Tekan + untuk menambah jadwal', style: TextStyle(color: Colors.grey.shade400)),
-        ],
-      ),
-    );
-  }
-}
-
-class _JadwalCard extends StatelessWidget {
-  final Jadwal jadwal;
-  final VoidCallback onEdit;
-  final VoidCallback onDelete;
-
-  const _JadwalCard({
-    required this.jadwal,
-    required this.onEdit,
-    required this.onDelete,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Dismissible(
-      key: Key(jadwal.key),
-      direction: DismissDirection.endToStart,
-      background: Container(
-        alignment: Alignment.centerRight,
-        padding: const EdgeInsets.only(right: 20),
-        decoration: BoxDecoration(
-          color: Colors.red.shade400,
-          borderRadius: BorderRadius.circular(16),
-        ),
-        child: const Icon(Icons.delete_outline_rounded, color: Colors.white, size: 28),
-      ),
-      onDismissed: (_) => onDelete(),
-      child: Card(
-        margin: const EdgeInsets.only(bottom: 12),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-        elevation: 2,
-        child: ListTile(
-          contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-          leading: Container(
-            width: 48,
-            height: 48,
-            decoration: BoxDecoration(
-              color: const Color(0xFF00B4D8).withOpacity(0.15),
-              borderRadius: BorderRadius.circular(12),
+              ],
             ),
-            child: const Icon(Icons.access_alarm_rounded, color: Color(0xFF0077B6)),
-          ),
-          title: Text(
-            jadwal.waktu,
-            style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, letterSpacing: 1),
-          ),
-          subtitle: Text(jadwal.key, style: TextStyle(color: Colors.grey.shade500)),
-          trailing: IconButton(
-            icon: const Icon(Icons.edit_rounded, color: Color(0xFF0077B6)),
-            onPressed: onEdit,
           ),
         ),
       ),
@@ -487,132 +421,25 @@ class _JadwalCard extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────
-//  TIME PICKER DIALOG
+//  MAIN SHELL – Bottom Nav
 // ─────────────────────────────────────────────
-class _TimePickerDialog extends StatefulWidget {
-  final TimeOfDay initial;
-  const _TimePickerDialog({required this.initial});
-
+class MainShell extends StatefulWidget {
+  const MainShell({super.key});
   @override
-  State<_TimePickerDialog> createState() => _TimePickerDialogState();
+  State<MainShell> createState() => _MainShellState();
 }
 
-class _TimePickerDialogState extends State<_TimePickerDialog> {
-  late int _hour;
-  late int _minute;
-
-  @override
-  void initState() {
-    super.initState();
-    _hour = widget.initial.hour;
-    _minute = widget.initial.minute;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      title: const Text('Atur Waktu Pakan'),
-      content: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          _NumberPicker(
-            value: _hour,
-            min: 0,
-            max: 23,
-            onChanged: (v) => setState(() => _hour = v),
-            label: 'Jam',
-          ),
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 8),
-            child: Text(':', style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold)),
-          ),
-          _NumberPicker(
-            value: _minute,
-            min: 0,
-            max: 59,
-            onChanged: (v) => setState(() => _minute = v),
-            label: 'Menit',
-          ),
-        ],
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('Batal'),
-        ),
-        ElevatedButton(
-          onPressed: () => Navigator.pop(context, TimeOfDay(hour: _hour, minute: _minute)),
-          child: const Text('Simpan'),
-        ),
-      ],
-    );
-  }
-}
-
-class _NumberPicker extends StatelessWidget {
-  final int value;
-  final int min;
-  final int max;
-  final ValueChanged<int> onChanged;
-  final String label;
-
-  const _NumberPicker({
-    required this.value,
-    required this.min,
-    required this.max,
-    required this.onChanged,
-    required this.label,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Text(label, style: const TextStyle(fontSize: 12, color: Colors.grey)),
-        const SizedBox(height: 4),
-        Row(
-          children: [
-            IconButton(
-              onPressed: value > min ? () => onChanged(value - 1) : null,
-              icon: const Icon(Icons.remove_circle_outline),
-            ),
-            Text(
-              value.toString().padLeft(2, '0'),
-              style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
-            ),
-            IconButton(
-              onPressed: value < max ? () => onChanged(value + 1) : null,
-              icon: const Icon(Icons.add_circle_outline),
-            ),
-          ],
-        ),
-      ],
-    );
-  }
-}
-
-// ─────────────────────────────────────────────
-//  VOLUME TAB
-// ─────────────────────────────────────────────
-class VolumeTab extends StatefulWidget {
-  const VolumeTab({super.key});
-
-  @override
-  State<VolumeTab> createState() => _VolumeTabState();
-}
-
-class _VolumeTabState extends State<VolumeTab> {
-  int _persen = 0;
-  bool _loading = true;
+class _MainShellState extends State<MainShell> {
+  int _tab = 0;
+  SensorLive _live = const SensorLive();
+  bool _liveLoading = true;
   Timer? _timer;
 
   @override
   void initState() {
     super.initState();
-    _fetchVolume();
-    // Poll every 5 seconds for live-ish updates
-    _timer = Timer.periodic(const Duration(seconds: 1), (_) => _fetchVolume());
+    _fetchLive();
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) => _fetchLive());
   }
 
   @override
@@ -621,122 +448,238 @@ class _VolumeTabState extends State<VolumeTab> {
     super.dispose();
   }
 
-  Future<void> _fetchVolume() async {
-    try {
-      final value = await fbGetValue(FirebaseConfig.volumeUrl, 'jarakMakanan');
-      int persen = 0;
-      if (value is num) persen = value.toInt();
-      if (value is String) persen = double.tryParse(value)?.toInt() ?? 0;
-      persen = persen.clamp(0, 100);
-      if (mounted) setState(() { _persen = persen; _loading = false; });
-    } catch (_) {
-      if (mounted) setState(() => _loading = false);
+  Future<void> _fetchLive() async {
+    final data = await FirebaseService.fetchLive();
+    if (mounted && data != null) {
+      setState(() {
+        _live = data;
+        _liveLoading = false;
+      });
+    } else if (mounted && _liveLoading) {
+      setState(() => _liveLoading = false);
     }
-  }
-
-  Color get _levelColor {
-    if (_persen < 15) return Colors.red.shade400;
-    if (_persen < 40) return Colors.orange.shade400;
-    return const Color(0xFF0077B6);
   }
 
   @override
   Widget build(BuildContext context) {
+    final tabs = [
+      MonitoringTab(live: _live, isLoading: _liveLoading),
+      TindakanTab(live: _live, isLoading: _liveLoading),
+      const HistoryTab(),
+    ];
+
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Volume Pakan', style: TextStyle(fontWeight: FontWeight.bold)),
-        backgroundColor: const Color(0xFF0077B6),
-        foregroundColor: Colors.white,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh_rounded),
-            onPressed: _fetchVolume,
+      backgroundColor: AppColors.bg,
+      body: AnimatedSwitcher(
+        duration: const Duration(milliseconds: 250),
+        child: KeyedSubtree(key: ValueKey(_tab), child: tabs[_tab]),
+      ),
+      bottomNavigationBar: _BottomNav(
+        current: _tab,
+        onTap: (i) => setState(() => _tab = i),
+        live: _live,
+        isLoading: _liveLoading,
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
+//  BOTTOM NAVIGATION BAR  (iOS style)
+// ─────────────────────────────────────────────
+class _BottomNav extends StatelessWidget {
+  const _BottomNav({
+    required this.current,
+    required this.onTap,
+    required this.live,
+    required this.isLoading,
+  });
+  final int current;
+  final ValueChanged<int> onTap;
+  final SensorLive live;
+  final bool isLoading;
+
+  @override
+  Widget build(BuildContext context) {
+    final overall = isLoading ? WaterStatus.loading : overallStatus(live);
+    final items = [
+      _NavItem(Icons.water_drop_outlined, Icons.water_drop, 'Monitor'),
+      _NavItem(Icons.tips_and_updates_outlined, Icons.tips_and_updates, 'Tindakan'),
+      _NavItem(Icons.history_outlined, Icons.history, 'Riwayat'),
+    ];
+    final bottomPadding = MediaQuery.of(context).padding.bottom;
+
+    return Container(
+      decoration: BoxDecoration(
+        color: AppColors.navBg,
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.06),
+            blurRadius: 16,
+            offset: const Offset(0, -2),
           ),
         ],
       ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : SingleChildScrollView(
-              padding: const EdgeInsets.all(24),
-              child: Column(
-                children: [
-                  const SizedBox(height: 16),
-                  // Percentage circle
-                  Container(
-                    width: 200,
-                    height: 200,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      gradient: RadialGradient(
-                        colors: [
-                          _levelColor.withOpacity(0.15),
-                          _levelColor.withOpacity(0.05),
-                        ],
-                      ),
-                      border: Border.all(color: _levelColor, width: 4),
-                    ),
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: EdgeInsets.only(
+            top: 8,
+            bottom: bottomPadding > 0 ? 0 : 8,
+          ),
+          child: Row(
+            children: List.generate(items.length, (i) {
+              final item = items[i];
+              final isActive = current == i;
+              Color iconColor = isActive ? AppColors.primary : AppColors.textLight;
+              // Show status dot on monitor tab
+              bool showDot = i == 0 && !isLoading;
+              return Expanded(
+                child: GestureDetector(
+                  onTap: () => onTap(i),
+                  behavior: HitTestBehavior.opaque,
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 200),
+                    padding: const EdgeInsets.symmetric(vertical: 6),
                     child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
+                      mainAxisSize: MainAxisSize.min,
                       children: [
-                        Text(
-                          '$_persen%',
-                          style: TextStyle(
-                            fontSize: 52,
-                            fontWeight: FontWeight.bold,
-                            color: _levelColor,
-                          ),
+                        Stack(
+                          clipBehavior: Clip.none,
+                          children: [
+                            AnimatedContainer(
+                              duration: const Duration(milliseconds: 200),
+                              padding: const EdgeInsets.all(6),
+                              decoration: BoxDecoration(
+                                color: isActive ? AppColors.primaryLight : Colors.transparent,
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Icon(
+                                isActive ? item.activeIcon : item.icon,
+                                color: iconColor,
+                                size: 24,
+                              ),
+                            ),
+                            if (showDot)
+                              Positioned(
+                                top: -2,
+                                right: -2,
+                                child: Container(
+                                  width: 10,
+                                  height: 10,
+                                  decoration: BoxDecoration(
+                                    color: overall.color,
+                                    shape: BoxShape.circle,
+                                    border: Border.all(
+                                        color: Colors.white, width: 1.5),
+                                  ),
+                                ),
+                              ),
+                          ],
                         ),
-                        Text(
-                          'Level Pakan',
-                          style: TextStyle(color: Colors.grey.shade500, fontSize: 14),
+                        const SizedBox(height: 2),
+                        AnimatedDefaultTextStyle(
+                          duration: const Duration(milliseconds: 200),
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight:
+                                isActive ? FontWeight.w600 : FontWeight.w400,
+                            color: isActive
+                                ? AppColors.primary
+                                : AppColors.textLight,
+                          ),
+                          child: Text(item.label),
                         ),
                       ],
                     ),
                   ),
-                  const SizedBox(height: 40),
-                  // Vertical bar
+                ),
+              );
+            }),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _NavItem {
+  final IconData icon;
+  final IconData activeIcon;
+  final String label;
+  const _NavItem(this.icon, this.activeIcon, this.label);
+}
+
+// ─────────────────────────────────────────────
+//  TAB 1 – MONITORING
+// ─────────────────────────────────────────────
+class MonitoringTab extends StatelessWidget {
+  const MonitoringTab({
+    super.key,
+    required this.live,
+    required this.isLoading,
+  });
+  final SensorLive live;
+  final bool isLoading;
+
+  @override
+  Widget build(BuildContext context) {
+    final overall = isLoading ? WaterStatus.loading : overallStatus(live);
+    final top = MediaQuery.of(context).padding.top;
+
+    return SingleChildScrollView(
+      physics: const BouncingScrollPhysics(),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // ── HEADER ──
+          Container(
+            width: double.infinity,
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [AppColors.primary, AppColors.accent],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: const BorderRadius.only(
+                bottomLeft: Radius.circular(32),
+                bottomRight: Radius.circular(32),
+              ),
+            ),
+            child: Padding(
+              padding: EdgeInsets.fromLTRB(24, top + 20, 24, 28),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
                   Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    crossAxisAlignment: CrossAxisAlignment.end,
                     children: [
-                      // Labels
-                      Column(
-                        mainAxisSize: MainAxisSize.min,
-                        crossAxisAlignment: CrossAxisAlignment.end,
-                        children: [
-                          _levelLabel('100%'),
-                          SizedBox(height: 180 * (100 - _persen) / 100 - 10),
-                          _levelLabel('$_persen%'),
-                          SizedBox(height: 180 * _persen / 100),
-                          _levelLabel('0%'),
-                        ],
-                      ),
-                      const SizedBox(width: 12),
-                      // Tank
-                      Container(
-                        width: 80,
-                        height: 200,
-                        decoration: BoxDecoration(
-                          border: Border.all(color: Colors.grey.shade300, width: 2),
-                          borderRadius: BorderRadius.circular(8),
-                          color: Colors.grey.shade100,
+                      const Text(
+                        'Monika',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 28,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: -0.5,
                         ),
-                        child: Column(
+                      ),
+                      const Spacer(),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withOpacity(0.2),
+                          borderRadius: BorderRadius.circular(20),
+                        ),
+                        child: Row(
                           children: [
-                            Expanded(
-                              flex: 100 - _persen,
-                              child: Container(color: Colors.transparent),
-                            ),
-                            Expanded(
-                              flex: _persen == 0 ? 1 : _persen,
-                              child: Container(
-                                decoration: BoxDecoration(
-                                  color: _levelColor.withOpacity(0.7),
-                                  borderRadius: BorderRadius.only(
-                                    bottomLeft: const Radius.circular(6),
-                                    bottomRight: const Radius.circular(6),
-                                  ),
-                                ),
+                            _PulseDot(color: overall.color),
+                            const SizedBox(width: 6),
+                            Text(
+                              isLoading ? 'Memuat…' : overall.label,
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 13,
+                                fontWeight: FontWeight.w500,
                               ),
                             ),
                           ],
@@ -744,211 +687,1011 @@ class _VolumeTabState extends State<VolumeTab> {
                       ),
                     ],
                   ),
-                  const SizedBox(height: 32),
-                  // Status chip
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-                    decoration: BoxDecoration(
-                      color: _levelColor.withOpacity(0.1),
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(color: _levelColor.withOpacity(0.3)),
+                  const SizedBox(height: 4),
+                  const Text(
+                    'Monitor Kolam Koi Real-time',
+                    style: TextStyle(
+                      color: Colors.white70,
+                      fontSize: 14,
                     ),
-                    child: Text(
-                      _persen < 15
-                          ? '⚠️  Level pakan rendah!'
-                          : _persen < 40
-                              ? '🔶  Level pakan sedang'
-                              : '✅  Level pakan normal',
-                      style: TextStyle(color: _levelColor, fontWeight: FontWeight.w600),
+                  ),
+                  const SizedBox(height: 24),
+                  // Overall status card
+                  Container(
+                    padding: const EdgeInsets.all(20),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.15),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(
+                          color: Colors.white.withOpacity(0.3), width: 1),
+                    ),
+                    child: Row(
+                      children: [
+                        Container(
+                          width: 56,
+                          height: 56,
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.2),
+                            shape: BoxShape.circle,
+                          ),
+                          child: Center(
+                            child: Text(
+                              overall.emoji,
+                              style: const TextStyle(fontSize: 28),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                isLoading
+                                    ? 'Mengambil data…'
+                                    : overall == WaterStatus.good
+                                        ? 'Kondisi Air Optimal'
+                                        : overall == WaterStatus.warn
+                                            ? 'Perlu Perhatian'
+                                            : 'Kondisi Kritis!',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 17,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              const Text(
+                                'Update setiap 1 detik via Firebase',
+                                style: TextStyle(
+                                    color: Colors.white70, fontSize: 12),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ],
               ),
             ),
+          ),
+          const SizedBox(height: 24),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            child: const Text(
+              'Parameter Air',
+              style: TextStyle(
+                fontSize: 18,
+                fontWeight: FontWeight.w700,
+                color: AppColors.textDark,
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          // ── SENSOR CARDS ──
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Column(
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: _SensorCard(
+                        label: 'pH Air',
+                        value: isLoading ? '…' : live.ph.toStringAsFixed(2),
+                        unit: '',
+                        status: isLoading ? WaterStatus.loading : phStatus(live.ph),
+                        icon: Icons.science_outlined,
+                        iconColor: AppColors.phColor,
+                        bgColor: AppColors.phBg,
+                        range: '6.8 – 8.0',
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: _SensorCard(
+                        label: 'Amonia',
+                        value: isLoading ? '…' : live.nh3.toStringAsFixed(3),
+                        unit: 'ppm',
+                        status: isLoading ? WaterStatus.loading : nh3Status(live.nh3),
+                        icon: Icons.bubble_chart_outlined,
+                        iconColor: AppColors.nh3Color,
+                        bgColor: AppColors.nh3Bg,
+                        range: '≤ 0.020',
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    Expanded(
+                      child: _SensorCard(
+                        label: 'Kekeruhan',
+                        value: isLoading ? '…' : live.ntu.toStringAsFixed(1),
+                        unit: 'NTU',
+                        status: isLoading ? WaterStatus.loading : ntuStatus(live.ntu),
+                        icon: Icons.opacity_outlined,
+                        iconColor: AppColors.ntuColor,
+                        bgColor: AppColors.ntuBg,
+                        range: '< 25',
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: _SensorCard(
+                        label: 'TDS',
+                        value: isLoading ? '…' : live.tds.toStringAsFixed(0),
+                        unit: 'ppm',
+                        status: isLoading ? WaterStatus.loading : tdsStatus(live.tds),
+                        icon: Icons.filter_alt_outlined,
+                        iconColor: AppColors.tdsColor,
+                        bgColor: AppColors.tdsBg,
+                        range: '100 – 300',
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 24),
+          // ── RANGE LEGEND ──
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Panduan Nilai',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.textDark,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                _RangeCard(
+                  label: 'pH',
+                  baik: '6.8 – 8.0',
+                  waspada: '6.0 – 6.7 | 8.1 – 8.5',
+                  buruk: '< 6.0 atau > 8.5',
+                  color: AppColors.phColor,
+                ),
+                _RangeCard(
+                  label: 'Amonia (ppm)',
+                  baik: '0 – 0.020',
+                  waspada: '0.021 – 0.050',
+                  buruk: '> 0.050',
+                  color: AppColors.nh3Color,
+                ),
+                _RangeCard(
+                  label: 'Kekeruhan (NTU)',
+                  baik: '< 25',
+                  waspada: '25 – 50',
+                  buruk: '> 50',
+                  color: AppColors.ntuColor,
+                ),
+                _RangeCard(
+                  label: 'TDS (ppm)',
+                  baik: '100 – 300',
+                  waspada: '301 – 500',
+                  buruk: '> 500',
+                  color: AppColors.tdsColor,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 32),
+        ],
+      ),
     );
-  }
-
-  Widget _levelLabel(String text) {
-    return Text(text, style: TextStyle(fontSize: 10, color: Colors.grey.shade500));
   }
 }
 
 // ─────────────────────────────────────────────
-//  HISTORY TAB
+//  SENSOR CARD WIDGET
+// ─────────────────────────────────────────────
+class _SensorCard extends StatelessWidget {
+  const _SensorCard({
+    required this.label,
+    required this.value,
+    required this.unit,
+    required this.status,
+    required this.icon,
+    required this.iconColor,
+    required this.bgColor,
+    required this.range,
+  });
+  final String label, value, unit, range;
+  final WaterStatus status;
+  final IconData icon;
+  final Color iconColor, bgColor;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.card,
+        borderRadius: BorderRadius.circular(20),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.04),
+            blurRadius: 12,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 36,
+                height: 36,
+                decoration: BoxDecoration(
+                  color: bgColor,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Icon(icon, color: iconColor, size: 18),
+              ),
+              const Spacer(),
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: status.bgColor,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Text(
+                  status.label,
+                  style: TextStyle(
+                    color: status.color,
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Text(
+                value,
+                style: const TextStyle(
+                  fontSize: 26,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.textDark,
+                  letterSpacing: -1,
+                ),
+              ),
+              if (unit.isNotEmpty) ...[
+                const SizedBox(width: 3),
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 4),
+                  child: Text(
+                    unit,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: AppColors.textMed,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+          const SizedBox(height: 2),
+          Text(
+            label,
+            style: const TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              color: AppColors.textDark,
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            'Ideal: $range',
+            style: const TextStyle(fontSize: 11, color: AppColors.textLight),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
+//  RANGE CARD WIDGET
+// ─────────────────────────────────────────────
+class _RangeCard extends StatelessWidget {
+  const _RangeCard({
+    required this.label,
+    required this.baik,
+    required this.waspada,
+    required this.buruk,
+    required this.color,
+  });
+  final String label, baik, waspada, buruk;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 8),
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppColors.card,
+        borderRadius: BorderRadius.circular(14),
+        border: Border(left: BorderSide(color: color, width: 3)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.03),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 90,
+            child: Text(
+              label,
+              style: const TextStyle(
+                fontWeight: FontWeight.w600,
+                fontSize: 13,
+                color: AppColors.textDark,
+              ),
+            ),
+          ),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _RangeRow(AppColors.good, '✓ $baik'),
+                _RangeRow(AppColors.warn, '⚠ $waspada'),
+                _RangeRow(AppColors.bad, '✗ $buruk'),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _RangeRow extends StatelessWidget {
+  const _RangeRow(this.color, this.text);
+  final Color color;
+  final String text;
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 2),
+      child: Text(
+        text,
+        style: TextStyle(fontSize: 11, color: color, fontWeight: FontWeight.w500),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
+//  PULSING DOT
+// ─────────────────────────────────────────────
+class _PulseDot extends StatefulWidget {
+  const _PulseDot({required this.color});
+  final Color color;
+  @override
+  State<_PulseDot> createState() => _PulseDotState();
+}
+
+class _PulseDotState extends State<_PulseDot>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _ctrl;
+  late Animation<double> _anim;
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+        vsync: this, duration: const Duration(milliseconds: 900))
+      ..repeat(reverse: true);
+    _anim = Tween<double>(begin: 0.5, end: 1.0).animate(_ctrl);
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FadeTransition(
+      opacity: _anim,
+      child: Container(
+        width: 8,
+        height: 8,
+        decoration: BoxDecoration(color: Colors.white, shape: BoxShape.circle),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
+//  TAB 2 – TINDAKAN
+// ─────────────────────────────────────────────
+class TindakanTab extends StatelessWidget {
+  const TindakanTab({super.key, required this.live, required this.isLoading});
+  final SensorLive live;
+  final bool isLoading;
+
+  @override
+  Widget build(BuildContext context) {
+    final recs = isLoading ? <Map<String, String>>[] : buildRecommendations(live);
+    final overall = isLoading ? WaterStatus.loading : overallStatus(live);
+    final top = MediaQuery.of(context).padding.top;
+
+    return SingleChildScrollView(
+      physics: const BouncingScrollPhysics(),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Header
+          Container(
+            width: double.infinity,
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [
+                  const Color(0xFF7BC8FF),
+                  const Color(0xFF98D8A8),
+                ],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: const BorderRadius.only(
+                bottomLeft: Radius.circular(32),
+                bottomRight: Radius.circular(32),
+              ),
+            ),
+            child: Padding(
+              padding: EdgeInsets.fromLTRB(24, top + 20, 24, 28),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Saran Tindakan',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 28,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: -0.5,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  const Text(
+                    'Rekomendasi berdasarkan data sensor',
+                    style: TextStyle(color: Colors.white70, fontSize: 14),
+                  ),
+                  const SizedBox(height: 20),
+                  Container(
+                    padding: const EdgeInsets.all(16),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.2),
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    child: Row(
+                      children: [
+                        Text(overall.emoji, style: const TextStyle(fontSize: 32)),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                isLoading
+                                    ? 'Memuat data…'
+                                    : recs.isEmpty
+                                        ? 'Semua parameter normal!'
+                                        : '${recs.length} parameter perlu perhatian',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                              Text(
+                                isLoading
+                                    ? 'Mohon tunggu sebentar'
+                                    : recs.isEmpty
+                                        ? 'Tidak ada tindakan yang diperlukan'
+                                        : 'Ikuti saran di bawah ini',
+                                style: const TextStyle(
+                                    color: Colors.white70, fontSize: 12),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const SizedBox(height: 24),
+          if (isLoading)
+            const Center(
+              child: Padding(
+                padding: EdgeInsets.all(40),
+                child: CircularProgressIndicator(color: AppColors.primary),
+              ),
+            )
+          else if (recs.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(28),
+                decoration: BoxDecoration(
+                  color: AppColors.goodBg,
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(color: AppColors.good.withOpacity(0.3)),
+                ),
+                child: Column(
+                  children: [
+                    const Text('✅', style: TextStyle(fontSize: 48)),
+                    const SizedBox(height: 12),
+                    const Text(
+                      'Kondisi Kolam Sempurna!',
+                      style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.textDark,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    const Text(
+                      'Semua indikator kualitas air dalam kondisi BAIK. Pertahankan kondisi kolam Anda!',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontSize: 14,
+                        color: AppColors.textMed,
+                        height: 1.5,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            )
+          else
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 20),
+              child: Column(
+                children: recs.map((r) => _RecommendationCard(rec: r)).toList(),
+              ),
+            ),
+          const SizedBox(height: 32),
+        ],
+      ),
+    );
+  }
+}
+
+class _RecommendationCard extends StatefulWidget {
+  const _RecommendationCard({required this.rec});
+  final Map<String, String> rec;
+  @override
+  State<_RecommendationCard> createState() => _RecommendationCardState();
+}
+
+class _RecommendationCardState extends State<_RecommendationCard> {
+  bool _expanded = true;
+
+  @override
+  Widget build(BuildContext context) {
+    final isBad = widget.rec['status'] == 'Buruk';
+    final borderColor = isBad ? AppColors.bad : AppColors.warn;
+    final bgColor = isBad ? AppColors.badBg : AppColors.warnBg;
+
+    return GestureDetector(
+      onTap: () => setState(() => _expanded = !_expanded),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 12),
+        decoration: BoxDecoration(
+          color: AppColors.card,
+          borderRadius: BorderRadius.circular(20),
+          border: Border(left: BorderSide(color: borderColor, width: 4)),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withOpacity(0.04),
+              blurRadius: 12,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: bgColor,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(
+                      widget.rec['emoji']!,
+                      style: const TextStyle(fontSize: 20),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          widget.rec['param']!,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w700,
+                            fontSize: 16,
+                            color: AppColors.textDark,
+                          ),
+                        ),
+                        Row(
+                          children: [
+                            Text(
+                              'Nilai: ${widget.rec['value']}',
+                              style: const TextStyle(
+                                  fontSize: 13, color: AppColors.textMed),
+                            ),
+                            const SizedBox(width: 8),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 8, vertical: 2),
+                              decoration: BoxDecoration(
+                                color: bgColor,
+                                borderRadius: BorderRadius.circular(6),
+                              ),
+                              child: Text(
+                                widget.rec['status']!,
+                                style: TextStyle(
+                                  color: borderColor,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                  Icon(
+                    _expanded
+                        ? Icons.keyboard_arrow_up
+                        : Icons.keyboard_arrow_down,
+                    color: AppColors.textLight,
+                  ),
+                ],
+              ),
+            ),
+            if (_expanded)
+              Container(
+                width: double.infinity,
+                margin: const EdgeInsets.only(left: 16, right: 16, bottom: 16),
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: bgColor,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Text(
+                  widget.rec['action']!,
+                  style: const TextStyle(
+                    fontSize: 13,
+                    color: AppColors.textDark,
+                    height: 1.6,
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
+//  TAB 3 – HISTORY
 // ─────────────────────────────────────────────
 class HistoryTab extends StatefulWidget {
   const HistoryTab({super.key});
-
   @override
   State<HistoryTab> createState() => _HistoryTabState();
 }
 
 class _HistoryTabState extends State<HistoryTab> {
-  final List<LogPakan> _logs = [];
+  List<HistoryItem> _items = [];
   bool _loading = true;
-  bool _sudahDicatat = false;
-  Timer? _timer;
+  String? _error;
 
   @override
   void initState() {
     super.initState();
-    _loadHistory();
-    _monitorLevel();
-    _timer = Timer.periodic(const Duration(seconds: 10), (_) => _monitorLevel());
+    _load();
   }
 
-  @override
-  void dispose() {
-    _timer?.cancel();
-    super.dispose();
-  }
-
-  Future<void> _loadHistory() async {
-    setState(() => _loading = true);
+  Future<void> _load() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
     try {
-      final data = await fbGet(FirebaseConfig.historyUrl, 'history');
-      final list = <LogPakan>[];
-      if (data != null) {
-        data.forEach((key, val) {
-          list.add(LogPakan(
-            judul: val['judul'] as String? ?? '',
-            tanggal: val['tanggal'] as String? ?? '',
-            level: val['level'] as String? ?? '',
-          ));
-        });
-        list.reversed; // Firebase key order is ascending; we reverse below
-      }
-      if (mounted) {
-        setState(() {
-          _logs
-            ..clear()
-            ..addAll(list.reversed.toList());
-          _loading = false;
-        });
-      }
-    } catch (_) {
-      if (mounted) setState(() => _loading = false);
+      final items = await FirebaseService.fetchHistory();
+      if (mounted) setState(() { _items = items; _loading = false; });
+    } catch (e) {
+      if (mounted) setState(() { _error = e.toString(); _loading = false; });
     }
-  }
-
-  Future<void> _monitorLevel() async {
-    try {
-      final value = await fbGetValue(FirebaseConfig.historyUrl, 'jarakMakanan');
-      int persen = 0;
-      if (value is num) persen = value.toInt();
-      if (value is String) persen = double.tryParse(value)?.toInt() ?? 0;
-      persen = persen.clamp(0, 100);
-
-      if (persen < 15 && !_sudahDicatat) {
-        await _catatLog(persen);
-        setState(() => _sudahDicatat = true);
-      } else if (persen >= 15 && _sudahDicatat) {
-        setState(() => _sudahDicatat = false);
-      }
-    } catch (_) {}
-  }
-
-  Future<void> _catatLog(int persen) async {
-    try {
-      final data = await fbGet(FirebaseConfig.historyUrl, 'history');
-      final count = data?.length ?? 0;
-      final nomor = count + 1;
-      final now = DateTime.now();
-      final days = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
-      final day = days[now.weekday % 7];
-      final tanggal =
-          '$day, ${now.day.toString().padLeft(2, '0')}/${now.month.toString().padLeft(2, '0')}/${now.year}';
-
-      await fbPost(FirebaseConfig.historyUrl, 'history', {
-        'judul': 'Log $nomor',
-        'tanggal': tanggal,
-        'level': '$persen%',
-      });
-
-      await _loadHistory();
-    } catch (_) {}
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Riwayat Pakan', style: TextStyle(fontWeight: FontWeight.bold)),
-        backgroundColor: const Color(0xFF0077B6),
-        foregroundColor: Colors.white,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh_rounded),
-            onPressed: _loadHistory,
+    final top = MediaQuery.of(context).padding.top;
+    return Column(
+      children: [
+        // Header
+        Container(
+          width: double.infinity,
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: [AppColors.accent, const Color(0xFFFFB347)],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            borderRadius: const BorderRadius.only(
+              bottomLeft: Radius.circular(32),
+              bottomRight: Radius.circular(32),
+            ),
           ),
-        ],
-      ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : _logs.isEmpty
-              ? Center(
+          child: Padding(
+            padding: EdgeInsets.fromLTRB(24, top + 20, 24, 28),
+            child: Row(
+              children: [
+                const Expanded(
                   child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Icon(Icons.history_toggle_off_rounded,
-                          size: 72, color: Colors.grey.shade400),
-                      const SizedBox(height: 16),
-                      Text('Belum ada riwayat',
-                          style: TextStyle(color: Colors.grey.shade500, fontSize: 16)),
+                      Text(
+                        'Riwayat',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 28,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: -0.5,
+                        ),
+                      ),
+                      SizedBox(height: 4),
+                      Text(
+                        'Data kondisi air tersimpan',
+                        style: TextStyle(color: Colors.white70, fontSize: 14),
+                      ),
                     ],
                   ),
-                )
-              : ListView.builder(
-                  padding: const EdgeInsets.all(16),
-                  itemCount: _logs.length,
-                  itemBuilder: (ctx, i) {
-                    final log = _logs[i];
-                    return _LogCard(log: log);
-                  },
                 ),
+                GestureDetector(
+                  onTap: _load,
+                  child: Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withOpacity(0.2),
+                      shape: BoxShape.circle,
+                    ),
+                    child: _loading
+                        ? const SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(
+                                color: Colors.white, strokeWidth: 2),
+                          )
+                        : const Icon(Icons.refresh, color: Colors.white, size: 20),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        Expanded(
+          child: _loading
+              ? const Center(
+                  child:
+                      CircularProgressIndicator(color: AppColors.primary))
+              : _error != null
+                  ? Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(32),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.error_outline,
+                                color: AppColors.bad, size: 48),
+                            const SizedBox(height: 12),
+                            Text('Gagal memuat data',
+                                style: const TextStyle(
+                                    fontWeight: FontWeight.w600,
+                                    color: AppColors.textDark)),
+                            const SizedBox(height: 16),
+                            ElevatedButton(
+                              onPressed: _load,
+                              child: const Text('Coba lagi'),
+                            ),
+                          ],
+                        ),
+                      ),
+                    )
+                  : _items.isEmpty
+                      ? const Center(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(Icons.history, size: 56, color: AppColors.textLight),
+                              SizedBox(height: 12),
+                              Text(
+                                'Belum ada data riwayat',
+                                style: TextStyle(color: AppColors.textMed, fontSize: 16),
+                              ),
+                            ],
+                          ),
+                        )
+                      : ListView.builder(
+                          padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
+                          physics: const BouncingScrollPhysics(),
+                          itemCount: _items.length,
+                          itemBuilder: (_, i) =>
+                              _HistoryCard(item: _items[i]),
+                        ),
+        ),
+      ],
     );
   }
 }
 
-class _LogCard extends StatelessWidget {
-  final LogPakan log;
-  const _LogCard({required this.log});
-
-  Color get _levelColor {
-    final persen = int.tryParse(log.level.replaceAll('%', '')) ?? 0;
-    if (persen < 15) return Colors.red.shade400;
-    if (persen < 40) return Colors.orange.shade400;
-    return const Color(0xFF0077B6);
-  }
+class _HistoryCard extends StatelessWidget {
+  const _HistoryCard({required this.item});
+  final HistoryItem item;
 
   @override
   Widget build(BuildContext context) {
-    return Card(
+    final ps = phStatus(item.ph);
+    final as = nh3Status(item.nh3);
+    final ns = ntuStatus(item.ntu);
+    final ts = tdsStatus(item.tds);
+    final overall = [ps, as, ns, ts].contains(WaterStatus.bad)
+        ? WaterStatus.bad
+        : [ps, as, ns, ts].contains(WaterStatus.warn)
+            ? WaterStatus.warn
+            : WaterStatus.good;
+
+    return Container(
       margin: const EdgeInsets.only(bottom: 12),
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      elevation: 2,
-      child: ListTile(
-        contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-        leading: Container(
-          width: 48,
-          height: 48,
-          decoration: BoxDecoration(
-            color: _levelColor.withOpacity(0.15),
-            borderRadius: BorderRadius.circular(12),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: AppColors.card,
+        borderRadius: BorderRadius.circular(18),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.04),
+            blurRadius: 10,
+            offset: const Offset(0, 2),
           ),
-          child: Icon(Icons.warning_amber_rounded, color: _levelColor),
-        ),
-        title: Text(log.judul,
-            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-        subtitle: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const SizedBox(height: 4),
-            Text('Hari: ${log.tanggal}', style: TextStyle(color: Colors.grey.shade600)),
-            Text('Level Pakan: ${log.level}',
-                style: TextStyle(color: _levelColor, fontWeight: FontWeight.w600)),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                decoration: BoxDecoration(
+                  color: overall.bgColor,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(overall.emoji, style: const TextStyle(fontSize: 13)),
+                    const SizedBox(width: 4),
+                    Text(
+                      overall.label,
+                      style: TextStyle(
+                        color: overall.color,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Spacer(),
+              Text(
+                item.timestamp,
+                style: const TextStyle(
+                  fontSize: 12,
+                  color: AppColors.textMed,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              _HistoryParam('pH', item.ph.toStringAsFixed(2), ps),
+              _HistoryParam('NH₃', '${item.nh3.toStringAsFixed(3)}ppm', as),
+              _HistoryParam('NTU', item.ntu.toStringAsFixed(1), ns),
+              _HistoryParam('TDS', '${item.tds.toStringAsFixed(0)}ppm', ts),
+            ],
+          ),
+          if (item.unsafeReason.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: AppColors.warnBg,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Row(
+                children: [
+                  const Text('⚠️', style: TextStyle(fontSize: 14)),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      item.unsafeReason,
+                      style: const TextStyle(
+                          fontSize: 12, color: AppColors.textMed, height: 1.4),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           ],
-        ),
+        ],
+      ),
+    );
+  }
+}
+
+class _HistoryParam extends StatelessWidget {
+  const _HistoryParam(this.label, this.value, this.status);
+  final String label, value;
+  final WaterStatus status;
+  @override
+  Widget build(BuildContext context) {
+    return Expanded(
+      child: Column(
+        children: [
+          Text(
+            value,
+            style: TextStyle(
+              fontSize: 13,
+              fontWeight: FontWeight.w700,
+              color: status.color,
+            ),
+          ),
+          Text(
+            label,
+            style: const TextStyle(fontSize: 11, color: AppColors.textLight),
+          ),
+        ],
       ),
     );
   }
