@@ -280,7 +280,7 @@ jobs:
         run: |
           mkdir -p Payload
           cp -r build/ios/iphoneos/Runner.app Payload/
-          zip -r angklung.ipa Payload/
+          zip -r oka.ipa Payload/
           echo "IPA: $(du -sh oka.ipa)"
 
       - name: Upload IPA
