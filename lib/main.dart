@@ -612,7 +612,7 @@ class _VolumeTabState extends State<VolumeTab> {
     super.initState();
     _fetchVolume();
     // Poll every 5 seconds for live-ish updates
-    _timer = Timer.periodic(const Duration(seconds: 0), (_) => _fetchVolume());
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) => _fetchVolume());
   }
 
   @override
