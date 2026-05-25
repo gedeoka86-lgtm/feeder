@@ -1,229 +1,210 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:audioplayers/audioplayers.dart';
 import 'package:http/http.dart' as http;
-import 'package:shared_preferences/shared_preferences.dart';
 
-// ---------------------------------------------------------------------------
-// Audio service – one AudioPlayer per note, reused to prevent memory leaks
-// ---------------------------------------------------------------------------
-class AudioService {
-  AudioService._();
-  static final AudioService instance = AudioService._();
+// ─────────────────────────────────────────────
+//  FIREBASE CONFIG  ← change these URLs to yours
+// ─────────────────────────────────────────────
+class FirebaseConfig {
+  // Dashboard tab  – reads/writes "jadwal" node
+  static String dashboardUrl =
+      'https://okamakan-01-default-rtdb.asia-southeast1.firebasedatabase.app';
 
-  final Map<String, AudioPlayer> _players = {};
+  // Volume tab  – reads "jarakMakanan" node
+  static String volumeUrl =
+      'https://okamakan-01-default-rtdb.asia-southeast1.firebasedatabase.app';
 
-  static const Map<String, String> _noteFiles = {
-    'C': 'C',
-    'D': 'D',
-    'E': 'E',
-    'F': 'F',
-    'G': 'G',
-    'A': 'A',
-    'B': 'B',
-    "C'": 'C2',
-  };
-
-  Future<void> play(String note) async {
-    final filename = _noteFiles[note];
-    if (filename == null) return;
-    final player = _players.putIfAbsent(note, () => AudioPlayer());
-    await player.stop();
-    await player.play(AssetSource('notes/$filename.mp3'));
-  }
-
-  Future<void> stopAll() async {
-    for (final p in _players.values) {
-      await p.stop();
-    }
-  }
-
-  Future<void> disposeAll() async {
-    for (final p in _players.values) {
-      await p.dispose();
-    }
-    _players.clear();
-  }
+  // History tab  – reads "history" + "jarakMakanan" nodes
+  static String historyUrl =
+      'https://okamakan-01-default-rtdb.asia-southeast1.firebasedatabase.app';
 }
 
-// ---------------------------------------------------------------------------
-// App entry
-// ---------------------------------------------------------------------------
+// ─────────────────────────────────────────────
+//  DATA MODELS
+// ─────────────────────────────────────────────
+class Jadwal {
+  String key;
+  int jam;
+  int menit;
+  bool aktif;
+
+  Jadwal({
+    required this.key,
+    required this.jam,
+    required this.menit,
+    this.aktif = true,
+  });
+
+  String get waktu =>
+      '${jam.toString().padLeft(2, '0')}:${menit.toString().padLeft(2, '0')}';
+}
+
+class LogPakan {
+  final String judul;
+  final String tanggal;
+  final String level;
+
+  LogPakan({required this.judul, required this.tanggal, required this.level});
+}
+
+// ─────────────────────────────────────────────
+//  FIREBASE REST HELPERS
+// ─────────────────────────────────────────────
+Future<Map<String, dynamic>?> fbGet(String baseUrl, String path) async {
+  final url = Uri.parse('$baseUrl/$path.json');
+  final res = await http.get(url);
+  if (res.statusCode == 200 && res.body != 'null') {
+    return json.decode(res.body) as Map<String, dynamic>;
+  }
+  return null;
+}
+
+Future<dynamic> fbGetValue(String baseUrl, String path) async {
+  final url = Uri.parse('$baseUrl/$path.json');
+  final res = await http.get(url);
+  if (res.statusCode == 200 && res.body != 'null') {
+    return json.decode(res.body);
+  }
+  return null;
+}
+
+Future<void> fbPut(String baseUrl, String path, Map<String, dynamic> data) async {
+  final url = Uri.parse('$baseUrl/$path.json');
+  await http.put(url, body: json.encode(data));
+}
+
+Future<void> fbPatch(String baseUrl, String path, Map<String, dynamic> data) async {
+  final url = Uri.parse('$baseUrl/$path.json');
+  await http.patch(url, body: json.encode(data));
+}
+
+Future<void> fbDelete(String baseUrl, String path) async {
+  final url = Uri.parse('$baseUrl/$path.json');
+  await http.delete(url);
+}
+
+Future<String?> fbPost(String baseUrl, String path, Map<String, dynamic> data) async {
+  final url = Uri.parse('$baseUrl/$path.json');
+  final res = await http.post(url, body: json.encode(data));
+  if (res.statusCode == 200) {
+    final body = json.decode(res.body);
+    return body['name'] as String?;
+  }
+  return null;
+}
+
+// ─────────────────────────────────────────────
+//  MAIN
+// ─────────────────────────────────────────────
 void main() {
-  WidgetsFlutterBinding.ensureInitialized();
-  SystemChrome.setPreferredOrientations([
-    DeviceOrientation.landscapeLeft,
-    DeviceOrientation.landscapeRight,
-  ]);
-  runApp(const AngklungApp());
+  runApp(const PakanIkanApp());
 }
 
-class AngklungApp extends StatelessWidget {
-  const AngklungApp({super.key});
+class PakanIkanApp extends StatelessWidget {
+  const PakanIkanApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Angklung IoT',
+      title: 'Pakan Ikan',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        useMaterial3: true,
         colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFFF8BBD0),
+          seedColor: const Color(0xFF0077B6),
           brightness: Brightness.light,
         ),
+        useMaterial3: true,
+        fontFamily: 'SF Pro Display',
       ),
-      home: const SetupGate(),
+      home: const SplashScreen(),
     );
   }
 }
 
-// ---------------------------------------------------------------------------
-// Setup gate – checks Firebase URL is set
-// ---------------------------------------------------------------------------
-class SetupGate extends StatefulWidget {
-  const SetupGate({super.key});
-  @override
-  State<SetupGate> createState() => _SetupGateState();
-}
-
-class _SetupGateState extends State<SetupGate> {
-  bool? _configured;
-
-  @override
-  void initState() {
-    super.initState();
-    _checkConfig();
-  }
-
-  Future<void> _checkConfig() async {
-    final prefs = await SharedPreferences.getInstance();
-    final url = prefs.getString('firebase_db_url') ?? '';
-    setState(() => _configured = url.isNotEmpty);
-  }
-
-  void _onConfigured() => setState(() => _configured = true);
+// ─────────────────────────────────────────────
+//  SPLASH / MAIN SCREEN
+// ─────────────────────────────────────────────
+class SplashScreen extends StatelessWidget {
+  const SplashScreen({super.key});
 
   @override
   Widget build(BuildContext context) {
-    if (_configured == null) return const SizedBox.shrink();
-    if (!_configured!) return SetupScreen(onDone: _onConfigured);
-    return const MainPage();
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Setup / Settings screen – Firebase URL + Gemini API key
-// ---------------------------------------------------------------------------
-class SetupScreen extends StatefulWidget {
-  final VoidCallback onDone;
-  const SetupScreen({super.key, required this.onDone});
-
-  @override
-  State<SetupScreen> createState() => _SetupScreenState();
-}
-
-class _SetupScreenState extends State<SetupScreen> {
-  final _fbController = TextEditingController();
-  final _aiController = TextEditingController();
-  final _formKey = GlobalKey<FormState>();
-  bool _obscureKey = true;
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  Future<void> _load() async {
-    final prefs = await SharedPreferences.getInstance();
-    _fbController.text = prefs.getString('firebase_db_url') ?? '';
-    _aiController.text = prefs.getString('gemini_api_key') ?? '';
-  }
-
-  Future<void> _save() async {
-    if (_formKey.currentState!.validate()) {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('firebase_db_url', _fbController.text.trim());
-      await prefs.setString('gemini_api_key', _aiController.text.trim());
-      widget.onDone();
-    }
-  }
-
-  @override
-  void dispose() {
-    _fbController.dispose();
-    _aiController.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     return Scaffold(
-      backgroundColor: const Color(0xFFFCE4EC),
-      body: SafeArea(
-        child: Center(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.symmetric(horizontal: 48, vertical: 16),
-            child: Form(
-              key: _formKey,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const Icon(Icons.music_note, size: 42, color: Color(0xFFAD1457)),
-                  const SizedBox(height: 8),
-                  const Text(
-                    'Angklung IoT',
-                    style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
-                  ),
-                  const Text(
-                    'Configure your connections',
-                    style: TextStyle(fontSize: 13, color: Colors.black54),
-                  ),
-                  const SizedBox(height: 20),
-                  TextFormField(
-                    controller: _fbController,
-                    decoration: const InputDecoration(
-                      labelText: 'Firebase Realtime Database URL *',
-                      hintText: 'https://your-project.firebaseio.com',
-                      prefixIcon: Icon(Icons.cloud_outlined),
-                      border: OutlineInputBorder(),
-                    ),
-                    validator: (v) =>
-                        (v == null || v.trim().isEmpty) ? 'Required' : null,
-                  ),
-                  const SizedBox(height: 12),
-                  TextFormField(
-                    controller: _aiController,
-                    obscureText: _obscureKey,
-                    decoration: InputDecoration(
-                      labelText: 'Gemini API Key (for Song Converter)',
-                      hintText: 'AIzaSy...',
-                      prefixIcon: const Icon(Icons.auto_awesome_outlined),
-                      helperText: 'Optional – needed for YouTube → Sequence conversion',
-                      border: const OutlineInputBorder(),
-                      suffixIcon: IconButton(
-                        icon: Icon(
-                            _obscureKey ? Icons.visibility_off : Icons.visibility),
-                        onPressed: () =>
-                            setState(() => _obscureKey = !_obscureKey),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 20),
-                  ElevatedButton.icon(
-                    onPressed: _save,
-                    icon: const Icon(Icons.save),
-                    label: const Text('Save & Continue'),
-                    style: ElevatedButton.styleFrom(
-                      minimumSize: const Size(200, 44),
-                    ),
-                  ),
-                ],
+      body: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [Color(0xFF023E8A), Color(0xFF0077B6), Color(0xFF00B4D8)],
+          ),
+        ),
+        child: SafeArea(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Spacer(flex: 2),
+              // Logo circle
+              Container(
+                width: 120,
+                height: 120,
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.15),
+                  shape: BoxShape.circle,
+                  border: Border.all(color: Colors.white.withOpacity(0.4), width: 2),
+                ),
+                child: const Icon(Icons.set_meal_rounded, size: 64, color: Colors.white),
               ),
-            ),
+              const SizedBox(height: 32),
+              const Text(
+                'Pakan Ikan',
+                style: TextStyle(
+                  fontSize: 36,
+                  fontWeight: FontWeight.bold,
+                  color: Colors.white,
+                  letterSpacing: 1.2,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Automatic Fish Feeder',
+                style: TextStyle(
+                  fontSize: 16,
+                  color: Colors.white.withOpacity(0.75),
+                  letterSpacing: 0.5,
+                ),
+              ),
+              const Spacer(flex: 3),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 48),
+                child: SizedBox(
+                  width: double.infinity,
+                  height: 52,
+                  child: ElevatedButton(
+                    onPressed: () {
+                      Navigator.pushReplacement(
+                        context,
+                        MaterialPageRoute(builder: (_) => const HomeShell()),
+                      );
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.white,
+                      foregroundColor: const Color(0xFF023E8A),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(16),
+                      ),
+                      elevation: 0,
+                    ),
+                    child: const Text(
+                      'Mulai',
+                      style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 48),
+            ],
           ),
         ),
       ),
@@ -231,1439 +212,743 @@ class _SetupScreenState extends State<SetupScreen> {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Main navigation – 5 tabs
-// ---------------------------------------------------------------------------
-class MainPage extends StatefulWidget {
-  const MainPage({super.key});
+// ─────────────────────────────────────────────
+//  HOME SHELL  (bottom nav with 3 tabs)
+// ─────────────────────────────────────────────
+class HomeShell extends StatefulWidget {
+  const HomeShell({super.key});
+
   @override
-  State<MainPage> createState() => _MainPageState();
+  State<HomeShell> createState() => _HomeShellState();
 }
 
-class _MainPageState extends State<MainPage> {
-  int _pageIndex = 0;
+class _HomeShellState extends State<HomeShell> {
+  int _currentIndex = 0;
 
-  static const _pages = [
-    AngklungSimulator(),
-    RemoteController(),
-    MusicPage(),
-    RecorderPage(),
-    SongConverterPage(),
+  final List<Widget> _tabs = const [
+    DashboardTab(),
+    VolumeTab(),
+    HistoryTab(),
   ];
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: IndexedStack(index: _currentIndex, children: _tabs),
+      bottomNavigationBar: NavigationBar(
+        selectedIndex: _currentIndex,
+        onDestinationSelected: (i) => setState(() => _currentIndex = i),
+        destinations: const [
+          NavigationDestination(
+            icon: Icon(Icons.schedule_outlined),
+            selectedIcon: Icon(Icons.schedule_rounded),
+            label: 'Jadwal',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.water_drop_outlined),
+            selectedIcon: Icon(Icons.water_drop_rounded),
+            label: 'Volume',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.history_outlined),
+            selectedIcon: Icon(Icons.history_rounded),
+            label: 'History',
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────
+//  DASHBOARD TAB  (jadwal / schedule list)
+// ─────────────────────────────────────────────
+class DashboardTab extends StatefulWidget {
+  const DashboardTab({super.key});
+
+  @override
+  State<DashboardTab> createState() => _DashboardTabState();
+}
+
+class _DashboardTabState extends State<DashboardTab> {
+  final List<Jadwal> _jadwalList = [];
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadJadwal();
+  }
+
+  Future<void> _loadJadwal() async {
+    setState(() => _loading = true);
+    try {
+      final data = await fbGet(FirebaseConfig.dashboardUrl, 'jadwal');
+      final list = <Jadwal>[];
+      if (data != null) {
+        data.forEach((key, val) {
+          list.add(Jadwal(
+            key: key,
+            jam: (val['jam'] as num?)?.toInt() ?? 0,
+            menit: (val['menit'] as num?)?.toInt() ?? 0,
+            aktif: val['aktif'] as bool? ?? true,
+          ));
+        });
+        list.sort((a, b) {
+          final aNum = int.tryParse(a.key.replaceFirst('j', '')) ?? 0;
+          final bNum = int.tryParse(b.key.replaceFirst('j', '')) ?? 0;
+          return aNum.compareTo(bNum);
+        });
+      }
+      setState(() {
+        _jadwalList
+          ..clear()
+          ..addAll(list);
+        _loading = false;
+      });
+    } catch (e) {
+      setState(() => _loading = false);
+      _showSnack('Gagal memuat jadwal');
+    }
+  }
+
+  Future<void> _tambahJadwal() async {
+    var maxNum = 0;
+    for (final j in _jadwalList) {
+      final n = int.tryParse(j.key.replaceFirst('j', '')) ?? 0;
+      if (n > maxNum) maxNum = n;
+    }
+    final newKey = 'j${maxNum + 1}';
+    try {
+      await fbPut(FirebaseConfig.dashboardUrl, 'jadwal/$newKey', {
+        'jam': 0,
+        'menit': 0,
+        'aktif': true,
+      });
+      setState(() {
+        _jadwalList.add(Jadwal(key: newKey, jam: 0, menit: 0));
+      });
+      _showSnack('Jadwal $newKey ditambahkan');
+    } catch (_) {
+      _showSnack('Gagal menambah jadwal');
+    }
+  }
+
+  Future<void> _hapusJadwal(int index) async {
+    final jadwal = _jadwalList[index];
+    try {
+      await fbDelete(FirebaseConfig.dashboardUrl, 'jadwal/${jadwal.key}');
+      setState(() => _jadwalList.removeAt(index));
+      _showSnack('Jadwal ${jadwal.key} dihapus');
+    } catch (_) {
+      _showSnack('Gagal menghapus jadwal');
+    }
+  }
+
+  Future<void> _editJadwal(Jadwal jadwal) async {
+    final result = await showDialog<TimeOfDay>(
+      context: context,
+      builder: (_) => _TimePickerDialog(
+        initial: TimeOfDay(hour: jadwal.jam, minute: jadwal.menit),
+      ),
+    );
+    if (result == null) return;
+    try {
+      await fbPatch(FirebaseConfig.dashboardUrl, 'jadwal/${jadwal.key}', {
+        'jam': result.hour,
+        'menit': result.minute,
+      });
+      setState(() {
+        jadwal.jam = result.hour;
+        jadwal.menit = result.minute;
+      });
+      _showSnack('Jadwal ${jadwal.key} diupdate');
+    } catch (_) {
+      _showSnack('Gagal update jadwal');
+    }
+  }
+
+  void _showSnack(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        toolbarHeight: 34,
-        title: const Text('Angklung IoT', style: TextStyle(fontSize: 13)),
+        title: const Text('Jadwal Pakan', style: TextStyle(fontWeight: FontWeight.bold)),
+        backgroundColor: const Color(0xFF0077B6),
+        foregroundColor: Colors.white,
         actions: [
           IconButton(
-            icon: const Icon(Icons.settings_outlined, size: 18),
-            tooltip: 'Settings',
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) =>
-                    SetupScreen(onDone: () => Navigator.pop(context)),
-              ),
-            ),
+            icon: const Icon(Icons.refresh_rounded),
+            onPressed: _loadJadwal,
+            tooltip: 'Refresh',
           ),
         ],
       ),
-      body: SafeArea(
-        child: IndexedStack(index: _pageIndex, children: _pages),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : _jadwalList.isEmpty
+              ? _emptyState()
+              : ListView.builder(
+                  padding: const EdgeInsets.all(16),
+                  itemCount: _jadwalList.length,
+                  itemBuilder: (ctx, i) {
+                    final j = _jadwalList[i];
+                    return _JadwalCard(
+                      jadwal: j,
+                      onEdit: () => _editJadwal(j),
+                      onDelete: () => _hapusJadwal(i),
+                    );
+                  },
+                ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: _tambahJadwal,
+        icon: const Icon(Icons.add_alarm_rounded),
+        label: const Text('Tambah Jadwal'),
+        backgroundColor: const Color(0xFF0077B6),
+        foregroundColor: Colors.white,
       ),
-      bottomNavigationBar: NavigationBar(
-        height: 54,
-        selectedIndex: _pageIndex,
-        labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
-        onDestinationSelected: (i) {
-          if (_pageIndex == 0 && i != 0) {
-            AudioService.instance.stopAll();
-          }
-          setState(() => _pageIndex = i);
-        },
-        destinations: const [
-          NavigationDestination(
-            icon: Icon(Icons.piano_outlined),
-            selectedIcon: Icon(Icons.piano),
-            label: 'Simulator',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.settings_remote_outlined),
-            selectedIcon: Icon(Icons.settings_remote),
-            label: 'Remote',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.music_note_outlined),
-            selectedIcon: Icon(Icons.music_note),
-            label: 'Music',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.fiber_manual_record_outlined),
-            selectedIcon: Icon(Icons.fiber_manual_record),
-            label: 'Record',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.auto_awesome_outlined),
-            selectedIcon: Icon(Icons.auto_awesome),
-            label: 'Convert',
-          ),
+    );
+  }
+
+  Widget _emptyState() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.schedule_rounded, size: 72, color: Colors.grey.shade400),
+          const SizedBox(height: 16),
+          Text('Belum ada jadwal', style: TextStyle(color: Colors.grey.shade500, fontSize: 16)),
+          const SizedBox(height: 8),
+          Text('Tekan + untuk menambah jadwal', style: TextStyle(color: Colors.grey.shade400)),
         ],
       ),
     );
   }
 }
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-Future<String> getDatabaseUrl() async {
-  final prefs = await SharedPreferences.getInstance();
-  return prefs.getString('firebase_db_url') ?? '';
-}
+class _JadwalCard extends StatelessWidget {
+  final Jadwal jadwal;
+  final VoidCallback onEdit;
+  final VoidCallback onDelete;
 
-Future<String> getGeminiKey() async {
-  final prefs = await SharedPreferences.getInstance();
-  return prefs.getString('gemini_api_key') ?? '';
-}
-
-/// Maps note label → Firebase key under /angklung/
-/// Matches exact keys visible in the Realtime Database console.
-const Map<String, String> kNoteFirebaseKeys = {
-  'C':  'note1',  // 🎵 note the 'a' — as shown in your Firebase console
-  'D':  'note2',
-  'E':  'note3',
-  'F':  'note4',
-  'G':  'note5',
-  'A':  'note6',
-  'B':  'note7',
-  "C'": 'note8',
-};
-
-const List<String> kNotes = ['C', 'D', 'E', 'F', 'G', 'A', 'B', "C'"];
-
-const List<Color> kColors = [
-  Color(0xFFF8BBD0), // pink
-  Color(0xFFE1BEE7), // lavender
-  Color(0xFFBBDEFB), // sky blue
-  Color(0xFFC8E6C9), // mint
-  Color(0xFFFFF9C4), // lemon
-  Color(0xFFFFE0B2), // peach
-  Color(0xFFFFCDD2), // salmon
-  Color(0xFFD1C4E9), // lilac
-];
-
-// ---------------------------------------------------------------------------
-// Note button – fills its parent; supports tap or press/release
-// ---------------------------------------------------------------------------
-class NoteButton extends StatefulWidget {
-  final String note;
-  final Color color;
-  final VoidCallback? onTap;
-  final void Function(bool pressed)? onPressedChanged;
-
-  const NoteButton({
-    super.key,
-    required this.note,
-    required this.color,
-    this.onTap,
-    this.onPressedChanged,
+  const _JadwalCard({
+    required this.jadwal,
+    required this.onEdit,
+    required this.onDelete,
   });
 
   @override
-  State<NoteButton> createState() => _NoteButtonState();
-}
-
-class _NoteButtonState extends State<NoteButton> {
-  bool _pressed = false;
-
-  @override
   Widget build(BuildContext context) {
-    final pressedColor = HSLColor.fromColor(widget.color)
-        .withLightness(
-          (HSLColor.fromColor(widget.color).lightness - 0.12).clamp(0.0, 1.0),
-        )
-        .toColor();
-
-    final button = AnimatedContainer(
-      duration: const Duration(milliseconds: 70),
-      decoration: BoxDecoration(
-        color: _pressed ? pressedColor : widget.color,
-        borderRadius: BorderRadius.circular(14),
-        boxShadow: _pressed
-            ? [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.10),
-                  blurRadius: 2,
-                  offset: const Offset(0, 1),
-                ),
-              ]
-            : [
-                BoxShadow(
-                  color: Colors.black.withOpacity(0.18),
-                  blurRadius: 6,
-                  offset: const Offset(0, 3),
-                ),
-              ],
-      ),
-      child: Center(
-        child: Text(
-          widget.note,
-          style: const TextStyle(
-            fontSize: 20,
-            fontWeight: FontWeight.w700,
-            color: Color(0xFF5D4037),
-          ),
+    return Dismissible(
+      key: Key(jadwal.key),
+      direction: DismissDirection.endToStart,
+      background: Container(
+        alignment: Alignment.centerRight,
+        padding: const EdgeInsets.only(right: 20),
+        decoration: BoxDecoration(
+          color: Colors.red.shade400,
+          borderRadius: BorderRadius.circular(16),
         ),
+        child: const Icon(Icons.delete_outline_rounded, color: Colors.white, size: 28),
       ),
-    );
-
-    if (widget.onPressedChanged != null) {
-      return GestureDetector(
-        onTapDown: (_) {
-          setState(() => _pressed = true);
-          widget.onPressedChanged?.call(true);
-        },
-        onTapUp: (_) {
-          setState(() => _pressed = false);
-          widget.onPressedChanged?.call(false);
-        },
-        onTapCancel: () {
-          setState(() => _pressed = false);
-          widget.onPressedChanged?.call(false);
-        },
-        child: button,
-      );
-    }
-
-    return GestureDetector(
-      onTapDown: (_) => setState(() => _pressed = true),
-      onTapUp: (_) {
-        setState(() => _pressed = false);
-        widget.onTap?.call();
-      },
-      onTapCancel: () => setState(() => _pressed = false),
-      child: button,
-    );
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Note grid – 2 rows × 4
-// ---------------------------------------------------------------------------
-class NoteGrid extends StatelessWidget {
-  final void Function(String note)? onTap;
-  final void Function(String note, bool pressed)? onPressedChanged;
-
-  const NoteGrid({super.key, this.onTap, this.onPressedChanged});
-
-  @override
-  Widget build(BuildContext context) {
-    final topRow = kNotes.sublist(0, 4);
-    final bottomRow = kNotes.sublist(4);
-
-    Widget buildRow(List<String> rowNotes, int colorOffset) {
-      return Row(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: rowNotes.asMap().entries.map((e) {
-          final note = e.value;
-          final color = kColors[e.key + colorOffset];
-          return Expanded(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 5),
-              child: NoteButton(
-                note: note,
-                color: color,
-                onTap: onTap != null ? () => onTap!(note) : null,
-                onPressedChanged: onPressedChanged != null
-                    ? (p) => onPressedChanged!(note, p)
-                    : null,
-              ),
+      onDismissed: (_) => onDelete(),
+      child: Card(
+        margin: const EdgeInsets.only(bottom: 12),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        elevation: 2,
+        child: ListTile(
+          contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+          leading: Container(
+            width: 48,
+            height: 48,
+            decoration: BoxDecoration(
+              color: const Color(0xFF00B4D8).withOpacity(0.15),
+              borderRadius: BorderRadius.circular(12),
             ),
-          );
-        }).toList(),
-      );
-    }
-
-    return Column(
-      children: [
-        Expanded(child: buildRow(topRow, 0)),
-        const SizedBox(height: 10),
-        Expanded(child: buildRow(bottomRow, 4)),
-      ],
-    );
-  }
-}
-
-// ---------------------------------------------------------------------------
-// 1. SIMULATOR – tap to play sound locally
-// ---------------------------------------------------------------------------
-class AngklungSimulator extends StatefulWidget {
-  const AngklungSimulator({super.key});
-  @override
-  State<AngklungSimulator> createState() => _AngklungSimulatorState();
-}
-
-class _AngklungSimulatorState extends State<AngklungSimulator> {
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 10, 12, 6),
-      child: NoteGrid(
-        onTap: (note) => AudioService.instance.play(note),
+            child: const Icon(Icons.access_alarm_rounded, color: Color(0xFF0077B6)),
+          ),
+          title: Text(
+            jadwal.waktu,
+            style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold, letterSpacing: 1),
+          ),
+          subtitle: Text(jadwal.key, style: TextStyle(color: Colors.grey.shade500)),
+          trailing: IconButton(
+            icon: const Icon(Icons.edit_rounded, color: Color(0xFF0077B6)),
+            onPressed: onEdit,
+          ),
+        ),
       ),
     );
   }
 }
 
-// ---------------------------------------------------------------------------
-// 2. REMOTE – sets angklung/nota1…note8 = true in Firebase
-//    (ESP32 resets to false after receiving)
-// ---------------------------------------------------------------------------
-class RemoteController extends StatefulWidget {
-  const RemoteController({super.key});
+// ─────────────────────────────────────────────
+//  TIME PICKER DIALOG
+// ─────────────────────────────────────────────
+class _TimePickerDialog extends StatefulWidget {
+  final TimeOfDay initial;
+  const _TimePickerDialog({required this.initial});
+
   @override
-  State<RemoteController> createState() => _RemoteControllerState();
+  State<_TimePickerDialog> createState() => _TimePickerDialogState();
 }
 
-class _RemoteControllerState extends State<RemoteController> {
-  String? _lastSent;
-  bool _sending = false;
+class _TimePickerDialogState extends State<_TimePickerDialog> {
+  late int _hour;
+  late int _minute;
 
-  Future<void> _sendNote(String note) async {
-    // Prevent spamming while a request is in flight
-    if (_sending) return;
-    setState(() {
-      _sending = true;
-      _lastSent = note;
-    });
-
-    try {
-      final baseUrl = await getDatabaseUrl();
-      if (baseUrl.isEmpty) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Firebase URL not configured')),
-          );
-        }
-        return;
-      }
-
-      final firebaseKey = kNoteFirebaseKeys[note]!;
-      // PUT true → triggers ESP32 to play this note
-      await http.put(
-        Uri.parse('$baseUrl/angklung/$firebaseKey.json'),
-        headers: {'Content-Type': 'application/json'},
-        body: 'true',
-      );
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Send failed: $e')),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _sending = false);
-    }
+  @override
+  void initState() {
+    super.initState();
+    _hour = widget.initial.hour;
+    _minute = widget.initial.minute;
   }
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      children: [
-        // Status bar
-        Padding(
-          padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 12),
-          child: Row(
-            children: [
-              const Icon(Icons.settings_remote, size: 16, color: Color(0xFFAD1457)),
-              const SizedBox(width: 6),
-              const Text(
-                'Remote → ESP32',
-                style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
-              ),
-              const SizedBox(width: 10),
-              if (_sending)
-                const SizedBox(
-                  width: 13,
-                  height: 13,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
-              if (_lastSent != null && !_sending) ...[
-                AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 250),
-                  child: Container(
-                    key: ValueKey(_lastSent),
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 10, vertical: 2),
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFF8BBD0),
-                      borderRadius: BorderRadius.circular(20),
-                    ),
-                    child: Text(
-                      '✓ Sent: $_lastSent  →  ${kNoteFirebaseKeys[_lastSent!]}',
-                      style: const TextStyle(
-                          fontSize: 12, fontWeight: FontWeight.w600),
-                    ),
-                  ),
-                ),
-              ],
-              const Spacer(),
-              Text(
-                'Sets true → ESP32 resets',
-                style: TextStyle(
-                    fontSize: 11, color: Colors.grey.shade500),
-              ),
-            ],
+    return AlertDialog(
+      title: const Text('Atur Waktu Pakan'),
+      content: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          _NumberPicker(
+            value: _hour,
+            min: 0,
+            max: 23,
+            onChanged: (v) => setState(() => _hour = v),
+            label: 'Jam',
           ),
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 8),
+            child: Text(':', style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold)),
+          ),
+          _NumberPicker(
+            value: _minute,
+            min: 0,
+            max: 59,
+            onChanged: (v) => setState(() => _minute = v),
+            label: 'Menit',
+          ),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Batal'),
         ),
-        // Note grid
-        Expanded(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
-            child: NoteGrid(onTap: _sendNote),
-          ),
+        ElevatedButton(
+          onPressed: () => Navigator.pop(context, TimeOfDay(hour: _hour, minute: _minute)),
+          child: const Text('Simpan'),
         ),
       ],
     );
   }
 }
 
-// ---------------------------------------------------------------------------
-// 3. MUSIC PAGE – one-tap play for predefined songs + stop
-// ---------------------------------------------------------------------------
-class MusicPage extends StatefulWidget {
-  const MusicPage({super.key});
+class _NumberPicker extends StatelessWidget {
+  final int value;
+  final int min;
+  final int max;
+  final ValueChanged<int> onChanged;
+  final String label;
+
+  const _NumberPicker({
+    required this.value,
+    required this.min,
+    required this.max,
+    required this.onChanged,
+    required this.label,
+  });
+
   @override
-  State<MusicPage> createState() => _MusicPageState();
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(label, style: const TextStyle(fontSize: 12, color: Colors.grey)),
+        const SizedBox(height: 4),
+        Row(
+          children: [
+            IconButton(
+              onPressed: value > min ? () => onChanged(value - 1) : null,
+              icon: const Icon(Icons.remove_circle_outline),
+            ),
+            Text(
+              value.toString().padLeft(2, '0'),
+              style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold),
+            ),
+            IconButton(
+              onPressed: value < max ? () => onChanged(value + 1) : null,
+              icon: const Icon(Icons.add_circle_outline),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
 }
 
-class _MusicPageState extends State<MusicPage> {
-  String? _activeSong;
-  bool _sending = false;
+// ─────────────────────────────────────────────
+//  VOLUME TAB
+// ─────────────────────────────────────────────
+class VolumeTab extends StatefulWidget {
+  const VolumeTab({super.key});
 
-  // Predefined songs – key matches exact Firebase field name
-  static const List<Map<String, dynamic>> _songs = [
-    {
-      'key': 'playPusaka',
-      'label': 'Pusaka',
-      'subtitle': 'Tanah Airku',
-      'emoji': '🇮🇩',
-      'color': Color(0xFFFFCDD2),
-    },
-    {
-      'key': 'playRaya',
-      'label': 'Raya',
-      'subtitle': 'Indonesia Raya',
-      'emoji': '🎌',
-      'color': Color(0xFFF8BBD0),
-    },
-    {
-      'key': 'playHalo',
-      'label': 'Halo-Halo',
-      'subtitle': 'Halo-Halo Bandung',
-      'emoji': '🌆',
-      'color': Color(0xFFE1BEE7),
-    },
-    {
-      'key': 'playKartini',
-      'label': 'Kartini',
-      'subtitle': 'Ibu Kita Kartini',
-      'emoji': '👗',
-      'color': Color(0xFFBBDEFB),
-    },
-    {
-      'key': 'playKetut',
-      'label': 'Ketut',
-      'subtitle': 'Custom song',
-      'emoji': '🎵',
-      'color': Color(0xFFC8E6C9),
-    },
-  ];
+  @override
+  State<VolumeTab> createState() => _VolumeTabState();
+}
 
-  Future<void> _triggerSong(String songKey) async {
-    if (_sending) return;
-    setState(() {
-      _sending = true;
-      _activeSong = songKey;
-    });
+class _VolumeTabState extends State<VolumeTab> {
+  int _persen = 0;
+  bool _loading = true;
+  Timer? _timer;
 
+  @override
+  void initState() {
+    super.initState();
+    _fetchVolume();
+    // Poll every 5 seconds for live-ish updates
+    _timer = Timer.periodic(const Duration(seconds: 5), (_) => _fetchVolume());
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _fetchVolume() async {
     try {
-      final baseUrl = await getDatabaseUrl();
-      if (baseUrl.isEmpty) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Firebase URL not configured')),
-          );
-        }
-        return;
-      }
-
-      // PUT true to the song key under /angklung/
-      await http.put(
-        Uri.parse('$baseUrl/angklung/$songKey.json'),
-        headers: {'Content-Type': 'application/json'},
-        body: 'true',
-      );
-
-      final song = _songs.firstWhere((s) => s['key'] == songKey);
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('▶ Playing ${song['label']}…'),
-            duration: const Duration(seconds: 2),
-          ),
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('Error: $e')));
-      }
-    } finally {
-      if (mounted) setState(() => _sending = false);
+      final value = await fbGetValue(FirebaseConfig.volumeUrl, 'jarakMakanan');
+      int persen = 0;
+      if (value is num) persen = value.toInt();
+      if (value is String) persen = double.tryParse(value)?.toInt() ?? 0;
+      persen = persen.clamp(0, 100);
+      if (mounted) setState(() { _persen = persen; _loading = false; });
+    } catch (_) {
+      if (mounted) setState(() => _loading = false);
     }
   }
 
-  Future<void> _stop() async {
-    if (_sending) return;
-    setState(() {
-      _sending = true;
-      _activeSong = null;
-    });
-
-    try {
-      final baseUrl = await getDatabaseUrl();
-      if (baseUrl.isEmpty) return;
-      await http.put(
-        Uri.parse('$baseUrl/angklung/stop.json'),
-        headers: {'Content-Type': 'application/json'},
-        body: 'true',
-      );
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-              content: Text('⏹ Stop sent'),
-              duration: Duration(seconds: 1)),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _sending = false);
-    }
+  Color get _levelColor {
+    if (_persen < 15) return Colors.red.shade400;
+    if (_persen < 40) return Colors.orange.shade400;
+    return const Color(0xFF0077B6);
   }
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Header row
-          Row(
-            children: [
-              const Icon(Icons.music_note, size: 16, color: Color(0xFFAD1457)),
-              const SizedBox(width: 6),
-              const Text(
-                'Play Music on ESP32',
-                style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
-              ),
-              const Spacer(),
-              // Stop button
-              ElevatedButton.icon(
-                onPressed: _sending ? null : _stop,
-                icon: const Icon(Icons.stop_circle_outlined, size: 16),
-                label: const Text('Stop', style: TextStyle(fontSize: 12)),
-                style: ElevatedButton.styleFrom(
-                  foregroundColor: Colors.red.shade700,
-                  backgroundColor: Colors.red.shade50,
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
-                  minimumSize: Size.zero,
-                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                ),
-              ),
-              if (_sending) ...[
-                const SizedBox(width: 8),
-                const SizedBox(
-                  width: 14,
-                  height: 14,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
-              ],
-            ],
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Volume Pakan', style: TextStyle(fontWeight: FontWeight.bold)),
+        backgroundColor: const Color(0xFF0077B6),
+        foregroundColor: Colors.white,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh_rounded),
+            onPressed: _fetchVolume,
           ),
-          const SizedBox(height: 8),
-
-          // Song cards – 3 columns grid (works well in landscape)
-          Expanded(
-            child: GridView.builder(
-              physics: const NeverScrollableScrollPhysics(),
-              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-                crossAxisCount: 3,
-                crossAxisSpacing: 10,
-                mainAxisSpacing: 10,
-                childAspectRatio: 2.8,
-              ),
-              itemCount: _songs.length,
-              itemBuilder: (context, i) {
-                final song = _songs[i];
-                final key = song['key'] as String;
-                final isActive = _activeSong == key;
-
-                return GestureDetector(
-                  onTap: _sending ? null : () => _triggerSong(key),
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 150),
+        ],
+      ),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : SingleChildScrollView(
+              padding: const EdgeInsets.all(24),
+              child: Column(
+                children: [
+                  const SizedBox(height: 16),
+                  // Percentage circle
+                  Container(
+                    width: 200,
+                    height: 200,
                     decoration: BoxDecoration(
-                      color: isActive
-                          ? HSLColor.fromColor(song['color'] as Color)
-                              .withLightness(0.72)
-                              .toColor()
-                          : song['color'] as Color,
-                      borderRadius: BorderRadius.circular(14),
-                      border: isActive
-                          ? Border.all(
-                              color: Colors.deepOrange.shade400, width: 2)
-                          : null,
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withOpacity(isActive ? 0.08 : 0.14),
-                          blurRadius: isActive ? 2 : 5,
-                          offset: Offset(0, isActive ? 1 : 3),
+                      shape: BoxShape.circle,
+                      gradient: RadialGradient(
+                        colors: [
+                          _levelColor.withOpacity(0.15),
+                          _levelColor.withOpacity(0.05),
+                        ],
+                      ),
+                      border: Border.all(color: _levelColor, width: 4),
+                    ),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Text(
+                          '$_persen%',
+                          style: TextStyle(
+                            fontSize: 52,
+                            fontWeight: FontWeight.bold,
+                            color: _levelColor,
+                          ),
+                        ),
+                        Text(
+                          'Level Pakan',
+                          style: TextStyle(color: Colors.grey.shade500, fontSize: 14),
                         ),
                       ],
                     ),
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 12),
-                      child: Row(
+                  ),
+                  const SizedBox(height: 40),
+                  // Vertical bar
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    children: [
+                      // Labels
+                      Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.end,
                         children: [
-                          Text(song['emoji'] as String,
-                              style: const TextStyle(fontSize: 22)),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  song['label'] as String,
-                                  style: const TextStyle(
-                                    fontSize: 14,
-                                    fontWeight: FontWeight.w700,
-                                    color: Color(0xFF5D4037),
-                                  ),
-                                ),
-                                Text(
-                                  song['subtitle'] as String,
-                                  style: const TextStyle(
-                                    fontSize: 10,
-                                    color: Color(0xFF8D6E63),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ),
-                          if (isActive)
-                            const Icon(Icons.graphic_eq,
-                                size: 16, color: Colors.deepOrange),
+                          _levelLabel('100%'),
+                          SizedBox(height: 180 * (100 - _persen) / 100 - 10),
+                          _levelLabel('$_persen%'),
+                          SizedBox(height: 180 * _persen / 100),
+                          _levelLabel('0%'),
                         ],
                       ),
-                    ),
-                  ),
-                );
-              },
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// ---------------------------------------------------------------------------
-// 4. RECORDER – press/release, auto rests, sends [noteIndex, duration] pairs
-// ---------------------------------------------------------------------------
-class RecorderPage extends StatefulWidget {
-  const RecorderPage({super.key});
-  @override
-  State<RecorderPage> createState() => _RecorderPageState();
-}
-
-class _RecorderPageState extends State<RecorderPage> {
-  bool _recording = false;
-  bool _paused = false;
-  Timer? _timer;
-  Timer? _countdownTimer;
-  int _elapsedMs = 0;
-  int _countdown = 0;
-
-  DateTime? _recordingStartTime;
-  DateTime? _lastEventEndTime;
-
-  List<List<dynamic>> _sequence = [];
-
-  String? _pressedNote;
-  DateTime? _pressTime;
-
-  static const double _minDurationSec = 0.3;
-
-  void _startCountdown() {
-    setState(() => _countdown = 3);
-    _countdownTimer = Timer.periodic(const Duration(seconds: 1), (t) {
-      if (_countdown > 1) {
-        setState(() => _countdown--);
-      } else {
-        t.cancel();
-        _beginRecording();
-      }
-    });
-  }
-
-  void _beginRecording() {
-    final now = DateTime.now();
-    setState(() {
-      _recording = true;
-      _paused = false;
-      _elapsedMs = 0;
-      _countdown = 0;
-      _sequence = [];
-      _pressedNote = null;
-      _recordingStartTime = now;
-      _lastEventEndTime = now;
-    });
-    _startElapsedTimer();
-  }
-
-  void _startElapsedTimer() {
-    _timer?.cancel();
-    _timer = Timer.periodic(const Duration(milliseconds: 100), (_) {
-      if (!_paused && _recordingStartTime != null) {
-        setState(() {
-          _elapsedMs =
-              DateTime.now().difference(_recordingStartTime!).inMilliseconds;
-        });
-      }
-    });
-  }
-
-  void _pauseResume() {
-    if (_paused) {
-      _recordingStartTime =
-          DateTime.now().subtract(Duration(milliseconds: _elapsedMs));
-      _startElapsedTimer();
-      setState(() => _paused = false);
-    } else {
-      _timer?.cancel();
-      setState(() => _paused = true);
-    }
-  }
-
-  void _reset() {
-    _timer?.cancel();
-    _countdownTimer?.cancel();
-    setState(() {
-      _recording = false;
-      _paused = false;
-      _elapsedMs = 0;
-      _countdown = 0;
-      _sequence = [];
-      _pressedNote = null;
-    });
-  }
-
-  Future<void> _stopAndSend() async {
-    if (_pressedNote != null) _finaliseCurrentNote();
-    _timer?.cancel();
-    setState(() {
-      _recording = false;
-      _paused = false;
-    });
-    if (_sequence.isEmpty) return;
-
-    final url = await getDatabaseUrl();
-    if (url.isNotEmpty) {
-      final uri = Uri.parse('$url/recordings.json');
-      await http.post(uri, body: jsonEncode(_sequence));
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Recording sent to Firebase')),
-        );
-      }
-    }
-  }
-
-  void _onNotePressState(String note, bool pressed) {
-    if (!_recording || _paused) {
-      if (pressed) AudioService.instance.play(note);
-      return;
-    }
-    if (pressed) {
-      if (_pressedNote != null && _pressedNote != note) {
-        _finaliseCurrentNote();
-      }
-      _pressedNote = note;
-      _pressTime = DateTime.now();
-      AudioService.instance.play(note);
-    } else {
-      if (_pressedNote == note) {
-        _finaliseCurrentNote();
-        _pressedNote = null;
-      }
-    }
-  }
-
-  void _finaliseCurrentNote() {
-    if (_pressedNote == null || _pressTime == null) return;
-    final noteIndex = kNotes.indexOf(_pressedNote!) + 1;
-    final pressTime = _pressTime!;
-    final now = DateTime.now();
-
-    double durationSec =
-        now.difference(pressTime).inMilliseconds / 1000.0;
-    if (durationSec < _minDurationSec) durationSec = _minDurationSec;
-
-    final gapSec =
-        pressTime.difference(_lastEventEndTime!).inMilliseconds / 1000.0;
-    if (gapSec > 0.01) {
-      _sequence.add([0, double.parse(gapSec.toStringAsFixed(2))]);
-    }
-    _sequence.add([noteIndex, double.parse(durationSec.toStringAsFixed(2))]);
-    _lastEventEndTime =
-        pressTime.add(Duration(milliseconds: (durationSec * 1000).round()));
-    setState(() {});
-  }
-
-  String _formatMs(int ms) {
-    final sec = ms ~/ 1000;
-    final min = sec ~/ 60;
-    return '${min.toString().padLeft(2, '0')}:${(sec % 60).toString().padLeft(2, '0')}';
-  }
-
-  @override
-  void dispose() {
-    _timer?.cancel();
-    _countdownTimer?.cancel();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final isCountingDown = _countdown > 0;
-    return Column(
-      children: [
-        Padding(
-          padding: const EdgeInsets.symmetric(vertical: 4),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              SizedBox(
-                width: 100,
-                child: Text(
-                  isCountingDown ? '$_countdown' : _formatMs(_elapsedMs),
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    fontSize: isCountingDown ? 40 : 28,
-                    fontWeight: FontWeight.bold,
-                    color: _recording && !_paused
-                        ? Colors.redAccent
-                        : Colors.black87,
-                  ),
-                ),
-              ),
-              const SizedBox(width: 12),
-              if (!_recording && !isCountingDown)
-                _CtrlButton(
-                  icon: Icons.fiber_manual_record,
-                  label: 'Record',
-                  color: Colors.redAccent,
-                  onPressed: _startCountdown,
-                )
-              else if (_recording) ...[
-                _CtrlButton(
-                  icon: _paused ? Icons.play_arrow : Icons.pause,
-                  label: _paused ? 'Resume' : 'Pause',
-                  onPressed: _pauseResume,
-                ),
-                const SizedBox(width: 8),
-                _CtrlButton(
-                  icon: Icons.refresh,
-                  label: 'Reset',
-                  onPressed: _reset,
-                ),
-                const SizedBox(width: 8),
-                _CtrlButton(
-                  icon: Icons.stop_circle,
-                  label: 'Stop & Send',
-                  color: Colors.deepOrange,
-                  onPressed: _stopAndSend,
-                ),
-              ],
-              const SizedBox(width: 16),
-              Container(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                decoration: BoxDecoration(
-                  color: const Color(0xFFF8BBD0),
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Text(
-                  '${_sequence.length} events',
-                  style: const TextStyle(
-                      fontSize: 13, fontWeight: FontWeight.w600),
-                ),
-              ),
-            ],
-          ),
-        ),
-        Expanded(
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
-            child: NoteGrid(onPressedChanged: _onNotePressState),
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _CtrlButton extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final VoidCallback onPressed;
-  final Color? color;
-
-  const _CtrlButton({
-    required this.icon,
-    required this.label,
-    required this.onPressed,
-    this.color,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return ElevatedButton.icon(
-      style: ElevatedButton.styleFrom(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-        minimumSize: Size.zero,
-        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-        foregroundColor: color,
-      ),
-      onPressed: onPressed,
-      icon: Icon(icon, size: 18),
-      label: Text(label, style: const TextStyle(fontSize: 13)),
-    );
-  }
-}
-
-// ---------------------------------------------------------------------------
-// 5. SONG CONVERTER – YouTube URL → Gemini AI → angklung sequence → Firebase
-//
-// Sequence format: [[noteIndex, durationSeconds], ...]
-//   noteIndex: 0=rest, 1=C, 2=D, 3=E, 4=F, 5=G, 6=A, 7=B, 8=C'
-//   durationSeconds: e.g. 0.25, 0.5, 1.0, 2.0
-//
-// Saved at: songs/<firebaseGeneratedId>/
-// ---------------------------------------------------------------------------
-class SongConverterPage extends StatefulWidget {
-  const SongConverterPage({super.key});
-  @override
-  State<SongConverterPage> createState() => _SongConverterPageState();
-}
-
-class _SongConverterPageState extends State<SongConverterPage> {
-  final _urlController = TextEditingController();
-  final _nameController = TextEditingController();
-  bool _converting = false;
-  bool _saving = false;
-  String? _error;
-  String? _statusMessage;
-  List<List<dynamic>>? _sequence;
-  String? _savedId;
-
-  // ── Call Gemini API with Google Search tool to identify song + make sequence ──
-  Future<void> _convert() async {
-    final ytUrl = _urlController.text.trim();
-    if (ytUrl.isEmpty) {
-      setState(() => _error = 'Please enter a YouTube URL');
-      return;
-    }
-
-    setState(() {
-      _converting = true;
-      _error = null;
-      _sequence = null;
-      _savedId = null;
-      _statusMessage = 'Identifying song via Gemini…';
-    });
-
-    try {
-      final apiKey = await getGeminiKey();
-      if (apiKey.isEmpty) {
-        setState(() {
-          _error =
-              'Gemini API key not configured.\nGo to ⚙ Settings and add your AIza... key.';
-        });
-        return;
-      }
-
-      // First call: identify the song + generate sequence using Gemini with Google Search
-      final response = await http.post(
-        Uri.parse(
-            'https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=$apiKey'),
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: jsonEncode({
-          'contents': [
-            {
-              'role': 'user',
-              'parts': [
-                {
-                  'text': '''You are an expert angklung music transcriber.
-
-YouTube URL: $ytUrl
-
-Your task:
-1. Identify the song title and artist from this YouTube URL (search the video ID or URL).
-2. Look up the melody/notes of this song.
-3. Transcribe the MAIN MELODY (verse or chorus) into angklung notation.
-
-Angklung note mapping:
-  0 = rest/silence
-  1 = C  (Do)
-  2 = D  (Re)
-  3 = E  (Mi)
-  4 = F  (Fa)
-  5 = G  (Sol)
-  6 = A  (La)
-  7 = B  (Si)
-  8 = C\' (High Do)
-
-Duration values (in seconds): 0.25, 0.5, 0.75, 1.0, 1.5, 2.0
-
-Rules:
-- Only use notes 0–8 (diatonic C major scale)
-- Aim for 16 to 60 events
-- Include rests (0) where appropriate for rhythm
-- Transpose as needed to stay within the 1–8 range
-
-IMPORTANT: Your final response must contain ONLY a valid JSON array.
-Do not include any explanation, markdown backticks, or text outside the array.
-
-Format:
-[[noteIndex, durationSeconds], [noteIndex, durationSeconds], ...]
-
-Example:
-[[3,0.5],[3,0.5],[5,1.0],[3,1.0],[4,0.5],[2,2.0],[0,0.5],[1,0.5],[2,0.5],[3,1.0]]'''
-                }
-              ]
-            }
-          ],
-          'tools': [
-            {
-              'googleSearch': {} // Enables Google Search grounding for accurate song lookups
-            }
-          ]
-        }),
-      );
-
-      setState(() => _statusMessage = 'Processing response…');
-
-      if (response.statusCode != 200) {
-        final errBody = utf8.decode(response.bodyBytes);
-        Map<String, dynamic>? errJson;
-        try {
-          errJson = jsonDecode(errBody) as Map<String, dynamic>;
-        } catch (_) {}
-        final msg = errJson?['error']?['message'] ?? 'HTTP ${response.statusCode}';
-        setState(() => _error = 'API error: $msg');
-        return;
-      }
-
-      final data = jsonDecode(utf8.decode(response.bodyBytes))
-          as Map<String, dynamic>;
-
-      String? rawText;
-      try {
-        // Extract the text block from Gemini's response
-        rawText = data['candidates'][0]['content']['parts'][0]['text'] as String;
-      } catch (e) {
-        setState(() => _error = 'No valid text response from AI.');
-        return;
-      }
-
-      if (rawText.isEmpty) {
-        setState(() => _error = 'No text response from AI.');
-        return;
-      }
-
-      // Strip any accidental markdown fences
-      final cleaned = rawText
-          .replaceAll('```json', '')
-          .replaceAll('```', '')
-          .trim();
-
-      // Find the JSON array in the response (handles extra text before/after)
-      final match = RegExp(r'\[[\s\S]*\]').firstMatch(cleaned);
-      if (match == null) {
-        setState(() =>
-            _error = 'Could not parse JSON array from response:\n\n$rawText');
-        return;
-      }
-
-      List<List<dynamic>> parsed;
-      try {
-        final raw = jsonDecode(match.group(0)!) as List<dynamic>;
-        parsed = raw
-            .map((e) => (e as List<dynamic>)
-                .map((v) => v is num ? v : num.parse(v.toString()))
-                .toList())
-            .toList();
-      } catch (e) {
-        setState(() => _error = 'JSON parse error: $e\n\n${match.group(0)}');
-        return;
-      }
-
-      // Auto-fill song name from text before the array (if short enough)
-      if (_nameController.text.isEmpty) {
-        final before = cleaned.substring(0, match.start).trim();
-        if (before.isNotEmpty && before.length < 120) {
-          _nameController.text = before
-              .replaceAll(RegExp(r'\n+'), ' ')
-              .replaceAll(RegExp(r'\s+'), ' ')
-              .trim();
-        }
-      }
-
-      setState(() {
-        _sequence = parsed;
-        _statusMessage = null;
-      });
-    } catch (e) {
-      setState(() => _error = 'Unexpected error: $e');
-    } finally {
-      if (mounted) setState(() => _converting = false);
-    }
-  }
-
-// ── Save sequence to Firebase at songs/<auto-id> ──────────────────────────
-  Future<void> _saveToFirebase() async {
-    if (_sequence == null) return;
-    setState(() {
-      _saving = true;
-      _savedId = null;
-    });
-
-    try {
-      final baseUrl = await getDatabaseUrl();
-      if (baseUrl.isEmpty) {
-        setState(() => _error = 'Firebase URL not configured');
-        return;
-      }
-
-      // Convert the List of Lists into a single formatted string: "{1,1},{2,0.5}..."
-      final String flatSequence = _sequence!.map((e) {
-        return '{${e[0]},${e[1]}}';
-      }).join(',');
-
-      final payload = jsonEncode({
-        'name': _nameController.text.trim().isNotEmpty
-            ? _nameController.text.trim()
-            : 'Unknown Song',
-        'source': _urlController.text.trim(),
-        'sequence': flatSequence, // Send the single string here!
-        'createdAt': DateTime.now().millisecondsSinceEpoch,
-      });
-
-      // POST → Firebase generates a unique push ID (e.g. -NxAbc123)
-      final response = await http.post(
-        Uri.parse('$baseUrl/songs.json'),
-        headers: {'Content-Type': 'application/json'},
-        body: payload,
-      );
-
-      if (response.statusCode == 200) {
-        final responseData =
-            jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
-        final newId = responseData['name'] as String;
-        setState(() => _savedId = newId);
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('✅ Saved as songs/$newId'),
-              duration: const Duration(seconds: 3),
-            ),
-          );
-        }
-      } else {
-        setState(() => _error = 'Firebase save failed: ${response.statusCode}');
-      }
-    } catch (e) {
-      setState(() => _error = 'Save error: $e');
-    } finally {
-      if (mounted) setState(() => _saving = false);
-    }
-  }
-  // ── Preview: human-readable note names ────────────────────────────────────
-  String _buildPreview(List<List<dynamic>> seq) {
-    const noteNames = ['—', 'C', 'D', 'E', 'F', 'G', 'A', 'B', "C'"];
-    return seq.map((e) {
-      final idx = (e[0] as num).toInt().clamp(0, 8);
-      final dur = (e[1] as num).toDouble();
-      return '${noteNames[idx]}(${dur}s)';
-    }).join('  ');
-  }
-
-  @override
-  void dispose() {
-    _urlController.dispose();
-    _nameController.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // ── Header ──────────────────────────────────────────────────────
-          Row(
-            children: [
-              const Icon(Icons.auto_awesome,
-                  size: 16, color: Color(0xFFAD1457)),
-              const SizedBox(width: 6),
-              const Text(
-                'YouTube → Angklung Sequence',
-                style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
-              ),
-              const Spacer(),
-              Text(
-                'Saves to  songs/<id>',
-                style: TextStyle(fontSize: 11, color: Colors.grey.shade500),
-              ),
-            ],
-          ),
-          const SizedBox(height: 10),
-
-          // ── URL input ────────────────────────────────────────────────────
-          Row(
-            children: [
-              Expanded(
-                flex: 3,
-                child: TextField(
-                  controller: _urlController,
-                  style: const TextStyle(fontSize: 13),
-                  decoration: InputDecoration(
-                    labelText: 'YouTube URL',
-                    labelStyle: const TextStyle(fontSize: 13),
-                    hintText: 'https://youtube.com/watch?v=...',
-                    prefixIcon: const Icon(Icons.link, size: 18),
-                    border: const OutlineInputBorder(),
-                    contentPadding: const EdgeInsets.symmetric(
-                        vertical: 10, horizontal: 10),
-                    isDense: true,
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                flex: 2,
-                child: TextField(
-                  controller: _nameController,
-                  style: const TextStyle(fontSize: 13),
-                  decoration: const InputDecoration(
-                    labelText: 'Song name',
-                    labelStyle: TextStyle(fontSize: 13),
-                    prefixIcon: Icon(Icons.music_note, size: 18),
-                    border: OutlineInputBorder(),
-                    contentPadding:
-                        EdgeInsets.symmetric(vertical: 10, horizontal: 10),
-                    isDense: true,
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              ElevatedButton.icon(
-                onPressed: _converting ? null : _convert,
-                icon: _converting
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2))
-                    : const Icon(Icons.auto_awesome, size: 16),
-                label: Text(
-                  _converting ? 'Converting…' : 'Convert',
-                  style: const TextStyle(fontSize: 13),
-                ),
-                style: ElevatedButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 14, vertical: 10),
-                  minimumSize: Size.zero,
-                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                ),
-              ),
-            ],
-          ),
-
-          // ── Status / Error ───────────────────────────────────────────────
-          if (_statusMessage != null && _converting) ...[
-            const SizedBox(height: 6),
-            Row(
-              children: [
-                const SizedBox(
-                    width: 14,
-                    height: 14,
-                    child: CircularProgressIndicator(strokeWidth: 2)),
-                const SizedBox(width: 8),
-                Text(_statusMessage!,
-                    style: const TextStyle(fontSize: 12, color: Colors.grey)),
-              ],
-            ),
-          ],
-          if (_error != null) ...[
-            const SizedBox(height: 8),
-            Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: Colors.red.shade50,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: Colors.red.shade200),
-              ),
-              child: Text(
-                _error!,
-                style: TextStyle(fontSize: 12, color: Colors.red.shade800),
-              ),
-            ),
-          ],
-
-          // ── Result ───────────────────────────────────────────────────────
-          if (_sequence != null) ...[
-            const SizedBox(height: 10),
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: const Color(0xFFF8BBD0).withOpacity(0.25),
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: const Color(0xFFF8BBD0)),
-              ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // Stats row
-                  Row(
-                    children: [
-                      const Icon(Icons.check_circle,
-                          size: 15, color: Colors.green),
-                      const SizedBox(width: 4),
-                      Text(
-                        '${_sequence!.length} events generated',
-                        style: const TextStyle(
-                            fontSize: 12, fontWeight: FontWeight.w600),
-                      ),
                       const SizedBox(width: 12),
-                      Text(
-                        'Total: ${_sequence!.fold<double>(0.0, (sum, e) => sum + (e[1] as num).toDouble()).toStringAsFixed(1)}s',
-                        style: const TextStyle(
-                            fontSize: 12, color: Colors.black54),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-
-                  // Human-readable preview
-                  Container(
-                    constraints: const BoxConstraints(maxHeight: 56),
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                    child: SingleChildScrollView(
-                      child: Text(
-                        _buildPreview(_sequence!),
-                        style: const TextStyle(
-                            fontSize: 11, fontFamily: 'monospace'),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 6),
-
-                  // Raw JSON
-                  Container(
-                    constraints: const BoxConstraints(maxHeight: 42),
-                    width: double.infinity,
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: Colors.grey.shade100,
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                    child: SingleChildScrollView(
-                      child: Text(
-                        jsonEncode(_sequence),
-                        style: const TextStyle(
-                            fontSize: 10,
-                            fontFamily: 'monospace',
-                            color: Colors.black54),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 8),
-
-            // ── Save button ───────────────────────────────────────────────
-            Row(
-              children: [
-                Expanded(
-                  child: ElevatedButton.icon(
-                    onPressed: _saving ? null : _saveToFirebase,
-                    icon: _saving
-                        ? const SizedBox(
-                            width: 16,
-                            height: 16,
-                            child: CircularProgressIndicator(strokeWidth: 2))
-                        : const Icon(Icons.cloud_upload, size: 16),
-                    label: Text(
-                      _saving ? 'Saving…' : 'Save to Firebase  (songs/)',
-                      style: const TextStyle(fontSize: 13),
-                    ),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.green.shade50,
-                      foregroundColor: Colors.green.shade800,
-                      padding: const EdgeInsets.symmetric(vertical: 10),
-                    ),
-                  ),
-                ),
-                if (_savedId != null) ...[
-                  const SizedBox(width: 10),
-                  Row(
-                    children: [
-                      const Icon(Icons.check_circle,
-                          size: 14, color: Colors.green),
-                      const SizedBox(width: 4),
-                      Text(
-                        'songs/$_savedId',
-                        style: const TextStyle(
-                          fontSize: 11,
-                          fontFamily: 'monospace',
-                          color: Colors.green,
-                          fontWeight: FontWeight.w600,
+                      // Tank
+                      Container(
+                        width: 80,
+                        height: 200,
+                        decoration: BoxDecoration(
+                          border: Border.all(color: Colors.grey.shade300, width: 2),
+                          borderRadius: BorderRadius.circular(8),
+                          color: Colors.grey.shade100,
+                        ),
+                        child: Column(
+                          children: [
+                            Expanded(
+                              flex: 100 - _persen,
+                              child: Container(color: Colors.transparent),
+                            ),
+                            Expanded(
+                              flex: _persen == 0 ? 1 : _persen,
+                              child: Container(
+                                decoration: BoxDecoration(
+                                  color: _levelColor.withOpacity(0.7),
+                                  borderRadius: BorderRadius.only(
+                                    bottomLeft: const Radius.circular(6),
+                                    bottomRight: const Radius.circular(6),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
                       ),
                     ],
                   ),
+                  const SizedBox(height: 32),
+                  // Status chip
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: _levelColor.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: _levelColor.withOpacity(0.3)),
+                    ),
+                    child: Text(
+                      _persen < 15
+                          ? '⚠️  Level pakan rendah!'
+                          : _persen < 40
+                              ? '🔶  Level pakan sedang'
+                              : '✅  Level pakan normal',
+                      style: TextStyle(color: _levelColor, fontWeight: FontWeight.w600),
+                    ),
+                  ),
                 ],
-              ],
+              ),
             ),
-          ],
+    );
+  }
+
+  Widget _levelLabel(String text) {
+    return Text(text, style: TextStyle(fontSize: 10, color: Colors.grey.shade500));
+  }
+}
+
+// ─────────────────────────────────────────────
+//  HISTORY TAB
+// ─────────────────────────────────────────────
+class HistoryTab extends StatefulWidget {
+  const HistoryTab({super.key});
+
+  @override
+  State<HistoryTab> createState() => _HistoryTabState();
+}
+
+class _HistoryTabState extends State<HistoryTab> {
+  final List<LogPakan> _logs = [];
+  bool _loading = true;
+  bool _sudahDicatat = false;
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadHistory();
+    _monitorLevel();
+    _timer = Timer.periodic(const Duration(seconds: 10), (_) => _monitorLevel());
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _loadHistory() async {
+    setState(() => _loading = true);
+    try {
+      final data = await fbGet(FirebaseConfig.historyUrl, 'history');
+      final list = <LogPakan>[];
+      if (data != null) {
+        data.forEach((key, val) {
+          list.add(LogPakan(
+            judul: val['judul'] as String? ?? '',
+            tanggal: val['tanggal'] as String? ?? '',
+            level: val['level'] as String? ?? '',
+          ));
+        });
+        list.reversed; // Firebase key order is ascending; we reverse below
+      }
+      if (mounted) {
+        setState(() {
+          _logs
+            ..clear()
+            ..addAll(list.reversed.toList());
+          _loading = false;
+        });
+      }
+    } catch (_) {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _monitorLevel() async {
+    try {
+      final value = await fbGetValue(FirebaseConfig.historyUrl, 'jarakMakanan');
+      int persen = 0;
+      if (value is num) persen = value.toInt();
+      if (value is String) persen = double.tryParse(value)?.toInt() ?? 0;
+      persen = persen.clamp(0, 100);
+
+      if (persen < 15 && !_sudahDicatat) {
+        await _catatLog(persen);
+        setState(() => _sudahDicatat = true);
+      } else if (persen >= 15 && _sudahDicatat) {
+        setState(() => _sudahDicatat = false);
+      }
+    } catch (_) {}
+  }
+
+  Future<void> _catatLog(int persen) async {
+    try {
+      final data = await fbGet(FirebaseConfig.historyUrl, 'history');
+      final count = data?.length ?? 0;
+      final nomor = count + 1;
+      final now = DateTime.now();
+      final days = ['Minggu', 'Senin', 'Selasa', 'Rabu', 'Kamis', 'Jumat', 'Sabtu'];
+      final day = days[now.weekday % 7];
+      final tanggal =
+          '$day, ${now.day.toString().padLeft(2, '0')}/${now.month.toString().padLeft(2, '0')}/${now.year}';
+
+      await fbPost(FirebaseConfig.historyUrl, 'history', {
+        'judul': 'Log $nomor',
+        'tanggal': tanggal,
+        'level': '$persen%',
+      });
+
+      await _loadHistory();
+    } catch (_) {}
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Riwayat Pakan', style: TextStyle(fontWeight: FontWeight.bold)),
+        backgroundColor: const Color(0xFF0077B6),
+        foregroundColor: Colors.white,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh_rounded),
+            onPressed: _loadHistory,
+          ),
         ],
+      ),
+      body: _loading
+          ? const Center(child: CircularProgressIndicator())
+          : _logs.isEmpty
+              ? Center(
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(Icons.history_toggle_off_rounded,
+                          size: 72, color: Colors.grey.shade400),
+                      const SizedBox(height: 16),
+                      Text('Belum ada riwayat',
+                          style: TextStyle(color: Colors.grey.shade500, fontSize: 16)),
+                    ],
+                  ),
+                )
+              : ListView.builder(
+                  padding: const EdgeInsets.all(16),
+                  itemCount: _logs.length,
+                  itemBuilder: (ctx, i) {
+                    final log = _logs[i];
+                    return _LogCard(log: log);
+                  },
+                ),
+    );
+  }
+}
+
+class _LogCard extends StatelessWidget {
+  final LogPakan log;
+  const _LogCard({required this.log});
+
+  Color get _levelColor {
+    final persen = int.tryParse(log.level.replaceAll('%', '')) ?? 0;
+    if (persen < 15) return Colors.red.shade400;
+    if (persen < 40) return Colors.orange.shade400;
+    return const Color(0xFF0077B6);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 12),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+      elevation: 2,
+      child: ListTile(
+        contentPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+        leading: Container(
+          width: 48,
+          height: 48,
+          decoration: BoxDecoration(
+            color: _levelColor.withOpacity(0.15),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Icon(Icons.warning_amber_rounded, color: _levelColor),
+        ),
+        title: Text(log.judul,
+            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+        subtitle: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const SizedBox(height: 4),
+            Text('Hari: ${log.tanggal}', style: TextStyle(color: Colors.grey.shade600)),
+            Text('Level Pakan: ${log.level}',
+                style: TextStyle(color: _levelColor, fontWeight: FontWeight.w600)),
+          ],
+        ),
       ),
     );
   }

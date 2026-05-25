@@ -1,25 +1,21 @@
-name: angklung_iot
-description: App to Control Angklung from Internet
+name: pakan_ikan
+description: Automatic Fish Feeder – Flutter (iOS + Android)
 publish_to: 'none'
 version: 1.0.0+1
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
 
-dev_dependencies:
-  flutter_launcher_icons: ^0.13.1   # latest version at the time
-
 dependencies:
   flutter:
     sdk: flutter
-  audioplayers: ^6.0.0
-  http: ^1.1.0
-  shared_preferences: ^2.2.0
+  http: ^1.2.1          # Used for Firebase Realtime Database REST API calls
 
-flutter:
-  uses-material-design: true    # ← must be here
-  assets:
-    - assets/notes/
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+
 
 flutter_launcher_icons:
   ios: true
